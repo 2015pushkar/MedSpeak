@@ -1,0 +1,2 @@
+"""MedSpeak backend package."""
+
