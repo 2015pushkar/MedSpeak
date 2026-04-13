@@ -27,6 +27,15 @@ const analysisPayload = {
       common_side_effects: ["Dizziness."],
       cautions: ["Monitor blood pressure changes."],
       fda_enriched: true,
+      grounding_status: "rag",
+      evidence: [
+        {
+          source: "chromadb",
+          label_section: "indications_and_usage",
+          chunk_id: "lisinopril-indications-0",
+          snippet: "Lisinopril is used to treat hypertension.",
+        },
+      ],
     },
   ],
   diagnoses: [
@@ -66,6 +75,7 @@ test("analyzes pasted text", async ({ page }) => {
   await expect(page.getByText("What this report is saying")).toBeVisible();
   await expect(page.getByText("Glucose", { exact: true })).toBeVisible();
   await expect(page.getByText("Lisinopril", { exact: true })).toBeVisible();
+  await expect(page.getByText("RAG grounded")).toBeVisible();
 });
 
 test("analyzes an uploaded pdf", async ({ page }) => {

@@ -31,6 +31,15 @@ const mixedResult: AnalysisResponse = {
       common_side_effects: ["Dizziness."],
       cautions: ["Monitor blood pressure changes."],
       fda_enriched: true,
+      grounding_status: "rag",
+      evidence: [
+        {
+          source: "chromadb",
+          label_section: "indications_and_usage",
+          chunk_id: "lisinopril-indications-0",
+          snippet: "Lisinopril is used to treat hypertension.",
+        },
+      ],
     },
   ],
   diagnoses: [
@@ -157,6 +166,7 @@ describe("AnalysisWorkbench", () => {
     expect(screen.getByText("Lisinopril")).toBeInTheDocument();
     expect(screen.getByText("Hypertension")).toBeInTheDocument();
     expect(screen.getByText(/what might explain my high glucose result/i)).toBeInTheDocument();
+    expect(screen.getByText(/rag grounded/i)).toBeInTheDocument();
+    expect(screen.getByText(/grounding evidence/i)).toBeInTheDocument();
   });
 });
-

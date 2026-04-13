@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 DocumentType = Literal["lab", "medication", "diagnosis", "mixed", "unknown"]
 LabStatus = Literal["low", "normal", "high", "unknown"]
+GroundingStatus = Literal["rag", "openfda_live", "text_only"]
 
 
 class ErrorResponse(BaseModel):
@@ -24,12 +25,21 @@ class LabResult(BaseModel):
     explanation: str
 
 
+class MedicationEvidence(BaseModel):
+    source: str
+    label_section: str
+    chunk_id: str
+    snippet: str
+
+
 class MedicationResult(BaseModel):
     name: str
     purpose: str
     common_side_effects: list[str] = Field(default_factory=list)
     cautions: list[str] = Field(default_factory=list)
     fda_enriched: bool = False
+    grounding_status: GroundingStatus = "text_only"
+    evidence: list[MedicationEvidence] = Field(default_factory=list)
 
 
 class DiagnosisResult(BaseModel):
@@ -73,4 +83,3 @@ class DependencyHealth(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     dependencies: dict[str, DependencyHealth]
-

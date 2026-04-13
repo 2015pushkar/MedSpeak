@@ -22,8 +22,13 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_classifier_model: str = "gpt-4o-mini"
     openai_analyst_model: str = "gpt-4o"
+    openai_embedding_model: str = "text-embedding-3-small"
     upstash_redis_rest_url: str | None = Field(default=None)
     upstash_redis_rest_token: str | None = Field(default=None)
+    chroma_persist_directory: str = "data/chroma"
+    retrieval_top_k: int = 3
+    llm_max_retries: int = 3
+    llm_retry_base_delay_seconds: float = 0.5
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -37,4 +42,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

@@ -54,6 +54,7 @@ async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     redis_health = await rate_limiter.healthcheck()
+    retrieval_health = pipeline.medication_rag.healthcheck()
     return HealthResponse(
         status="ok",
         dependencies={
@@ -63,9 +64,11 @@ async def health() -> HealthResponse:
                 "details": {
                     "classifier_model": settings.openai_classifier_model,
                     "analyst_model": settings.openai_analyst_model,
+                    "embedding_model": settings.openai_embedding_model,
                 },
             },
             "openfda": {"status": "available", "details": {"base_url": openfda_tool.base_url}},
+            "retrieval": {"status": retrieval_health["status"], "details": retrieval_health},
         },
     )
 

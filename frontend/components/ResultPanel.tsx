@@ -1,10 +1,22 @@
-import type { AnalysisResponse, LabResult, LabStatus } from "@/lib/types";
+import type { AnalysisResponse, GroundingStatus, LabResult, LabStatus } from "@/lib/types";
 
 const statusTone: Record<LabStatus, string> = {
   low: "bg-coral/15 text-coral",
   normal: "bg-leaf/15 text-leaf",
   high: "bg-gold/20 text-ink",
   unknown: "bg-ink/10 text-ink/70",
+};
+
+const groundingTone: Record<GroundingStatus, string> = {
+  rag: "bg-leaf/15 text-leaf",
+  openfda_live: "bg-gold/20 text-ink",
+  text_only: "bg-ink/8 text-ink/60",
+};
+
+const groundingLabel: Record<GroundingStatus, string> = {
+  rag: "RAG grounded",
+  openfda_live: "OpenFDA live",
+  text_only: "Text only",
 };
 
 function LabRangeIndicator({ lab }: { lab: LabResult }) {
@@ -75,7 +87,7 @@ export function ResultPanel({ result }: { result: AnalysisResponse }) {
                       <p className="text-lg font-semibold text-ink">{lab.name}</p>
                       <p className="text-sm text-ink/60">
                         {lab.value} {lab.unit}
-                        {lab.reference_range ? ` • ref ${lab.reference_range}` : ""}
+                        {lab.reference_range ? ` - ref ${lab.reference_range}` : ""}
                       </p>
                     </div>
                     <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] ${statusTone[lab.status]}`}>
@@ -107,11 +119,23 @@ export function ResultPanel({ result }: { result: AnalysisResponse }) {
                 <div key={medication.name} className="rounded-3xl border border-ink/8 bg-mist/70 p-4">
                   <div className="flex items-center justify-between gap-4">
                     <p className="text-lg font-semibold text-ink">{medication.name}</p>
-                    <span className="rounded-full bg-ink/8 px-3 py-1 text-xs uppercase tracking-[0.24em] text-ink/60">
-                      {medication.fda_enriched ? "OpenFDA" : "Text only"}
+                    <span className={`rounded-full px-3 py-1 text-xs uppercase tracking-[0.24em] ${groundingTone[medication.grounding_status]}`}>
+                      {groundingLabel[medication.grounding_status]}
                     </span>
                   </div>
                   <p className="mt-3 text-sm leading-6 text-ink/75">{medication.purpose}</p>
+                  {medication.evidence.length > 0 && (
+                    <div className="mt-4 rounded-2xl border border-ink/10 bg-white/55 p-3">
+                      <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Grounding evidence</p>
+                      <ul className="mt-2 space-y-2 text-sm text-ink/75">
+                        {medication.evidence.map((item) => (
+                          <li key={item.chunk_id}>
+                            <span className="font-semibold text-ink">{item.label_section.replaceAll("_", " ")}</span>: {item.snippet}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {medication.common_side_effects.length > 0 && (
                     <div className="mt-4">
                       <p className="text-xs uppercase tracking-[0.24em] text-ink/45">Common side effects</p>
@@ -180,4 +204,3 @@ export function ResultPanel({ result }: { result: AnalysisResponse }) {
     </section>
   );
 }
-

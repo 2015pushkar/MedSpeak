@@ -33,5 +33,16 @@ Return JSON with:
 - summary: short plain-language overview
 - warnings: array of non-alarmist cautions
 - questions_for_doctor: array of specific questions
-Do not provide diagnosis, treatment advice, or certainty beyond the data provided.
+Do not provide diagnosis, treatment advice, dosage instructions, or certainty beyond the data provided.
+Keep the tone educational and redirect users back to their clinician for decisions.
+"""
+
+SAFETY_REWRITE_PROMPT = """
+You rewrite patient-facing medical education text to make it safer.
+Return JSON with:
+- summary: short plain-language overview
+- warnings: array of non-alarmist cautions
+- questions_for_doctor: array of specific questions
+Remove any diagnosis claims, medication dosing instructions, treatment directives, or definitive interpretations.
+Keep only educational framing grounded in the provided findings.
 """

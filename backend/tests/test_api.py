@@ -36,6 +36,9 @@ def test_analyze_raw_text_contract():
     assert isinstance(payload["labs"], list)
     assert isinstance(payload["medications"], list)
     assert isinstance(payload["diagnoses"], list)
+    if payload["medications"]:
+        assert "grounding_status" in payload["medications"][0]
+        assert "evidence" in payload["medications"][0]
 
 
 def test_analyze_pdf_contract():
@@ -100,3 +103,10 @@ def test_rate_status_endpoint():
     assert response.status_code == 200
     payload = response.json()
     assert payload["daily_limit"] >= payload["remaining"]
+
+
+def test_health_reports_retrieval_dependency():
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "retrieval" in payload["dependencies"]

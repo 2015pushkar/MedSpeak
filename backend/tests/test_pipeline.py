@@ -56,6 +56,7 @@ async def test_pipeline_medication_only():
     assert result.document_type == "medication"
     assert result.medications
     assert all(item.fda_enriched for item in result.medications)
+    assert all(item.grounding_status == "openfda_live" for item in result.medications)
 
 
 async def test_pipeline_mixed_content():
@@ -94,7 +95,8 @@ async def test_pipeline_openfda_timeout_sets_partial_data():
     )
     assert result.document_type == "medication"
     assert result.meta.partial_data is True
-    assert "OpenFDA enrichment was unavailable" in result.meta.partial_data_reasons[0]
+    assert any("OpenFDA enrichment was unavailable" in reason for reason in result.meta.partial_data_reasons)
+    assert all(item.grounding_status == "text_only" for item in result.medications)
 
 
 async def test_pipeline_diagnosis_only():
@@ -107,4 +109,3 @@ async def test_pipeline_diagnosis_only():
     )
     assert result.document_type == "diagnosis"
     assert result.diagnoses
-
