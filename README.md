@@ -15,11 +15,12 @@ MedSpeak is an AI-assisted medical document explainer built as a FastAPI + Next.
 - Upstash Redis rate limiting with in-memory fallback
 
 ### Retrieval
-- Seed corpus of 10 medications ingested from OpenFDA
+- Seed corpus of 12 medications ingested from OpenFDA
 - Section-aware chunking at `500` tokens with `50` overlap
 - Persistent local vector store under `backend/data/chroma`
 - Preferred ChromaDB backend with a persistent JSON fallback when `chromadb` cannot be compiled locally
 - Retrieval evaluation script with measured top-1 / top-3 hit rate output
+- LLM-as-judge generation evaluation script for faithfulness, medication grounding, safety, and question quality
 
 ### Frontend
 - Next.js App Router UI for pasted text and PDF uploads
@@ -29,7 +30,7 @@ MedSpeak is an AI-assisted medical document explainer built as a FastAPI + Next.
 ## Planned Next
 - Verify the native ChromaDB backend on a machine with the required C++ build tools
 - Re-run ingestion and retrieval evaluation with OpenAI embeddings enabled
-- Expand the eval set beyond the 10-query interview sample
+- Expand the eval set beyond the current interview sample
 - Add human review for prompt wording and healthcare-safety tone
 
 ## Repo Layout
@@ -59,6 +60,29 @@ uvicorn app.main:app --reload --port 8000
 cd backend
 .venv\Scripts\python.exe scripts\ingest_openfda_labels.py
 .venv\Scripts\python.exe scripts\evaluate_retrieval.py
+.venv\Scripts\python.exe scripts\evaluate_generation.py --case mixed-discharge --judge-model gpt-4o-mini
+```
+
+### Generation Evaluation
+
+The generation-eval harness runs MedSpeak on sample or custom inputs, then asks a separate judge model for binary pass/fail checks on:
+- summary faithfulness
+- medication grounding support
+- safety
+- doctor-question quality
+
+Bundled sample cases:
+
+```bash
+cd backend
+.venv\Scripts\python.exe scripts\evaluate_generation.py --case mixed-discharge --case history-and-physical --judge-model gpt-4o-mini
+```
+
+Custom local report text:
+
+```bash
+cd backend
+.venv\Scripts\python.exe scripts\evaluate_generation.py --text-file path\to\report.txt --judge-model gpt-4o-mini --include-analysis
 ```
 
 ### Frontend
@@ -90,3 +114,4 @@ docker build -t medspeak-backend .
 - Documents are processed ephemerally. No accounts or history are included.
 - PDF extraction remains on the backend. OCR is intentionally out of scope.
 - On this machine, OpenFDA ingestion and retrieval evaluation ran successfully using the persistent JSON vector-store fallback because `chromadb` could not compile without local MSVC build tools.
+- Live generation evaluation uses the OpenAI API and therefore requires `OPENAI_API_KEY` plus a funded API project.

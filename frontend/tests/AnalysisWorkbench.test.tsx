@@ -32,6 +32,8 @@ const mixedResult: AnalysisResponse = {
       cautions: ["Monitor blood pressure changes."],
       fda_enriched: true,
       grounding_status: "rag",
+      status: "current",
+      grounding_note: "grounded from local corpus",
       evidence: [
         {
           source: "chromadb",
@@ -48,6 +50,32 @@ const mixedResult: AnalysisResponse = {
       plain_language: "High blood pressure.",
     },
   ],
+  vitals: [
+    {
+      name: "Blood Pressure",
+      value: "168/98",
+      unit: "",
+    },
+  ],
+  allergies: [
+    {
+      substance: "Penicillin",
+      reaction: "Rash and hives.",
+    },
+  ],
+  surgeries: [
+    {
+      procedure: "Total abdominal hysterectomy and bilateral oophorectomy",
+      timing: "1998",
+      reason: "uterine fibroids",
+    },
+  ],
+  risk_factors: [
+    {
+      factor: "Family history of premature CAD",
+      plain_language: "Early heart disease in the family can matter when chest pain is evaluated.",
+    },
+  ],
   questions_for_doctor: ["What might explain my high glucose result?"],
   disclaimer: "Educational use only.",
   meta: {
@@ -58,6 +86,18 @@ const mixedResult: AnalysisResponse = {
     partial_data_reasons: [],
     fallback_used: true,
     sources: ["openfda"],
+    processing_trace: {
+      classifier: "llm",
+      medications: "llm",
+      diagnoses: "llm",
+      synthesis: "template",
+    },
+    judge: {
+      status: "passed",
+      model: "gpt-4o-mini",
+      issues: [],
+      blocked_sections: [],
+    },
   },
 };
 
@@ -105,7 +145,7 @@ describe("AnalysisWorkbench", () => {
     expect(screen.getByText(/translating the report into everyday language/i)).toBeInTheDocument();
 
     resolveAnalysis?.(mockResponse(mixedResult));
-    await waitFor(() => expect(screen.getByText(/what this report is saying/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/what this report means/i)).toBeInTheDocument());
   });
 
   it("renders the quota exhausted state", async () => {
@@ -161,12 +201,16 @@ describe("AnalysisWorkbench", () => {
     await user.type(screen.getByLabelText(/paste report text/i), "Mixed report");
     await user.click(screen.getByRole("button", { name: /explain this report/i }));
 
-    expect(await screen.findByText(/what this report is saying/i)).toBeInTheDocument();
+    expect(await screen.findByText(/what this report means/i)).toBeInTheDocument();
     expect(screen.getByText("Glucose")).toBeInTheDocument();
     expect(screen.getByText("Lisinopril")).toBeInTheDocument();
     expect(screen.getByText("Hypertension")).toBeInTheDocument();
     expect(screen.getByText(/what might explain my high glucose result/i)).toBeInTheDocument();
     expect(screen.getByText(/rag grounded/i)).toBeInTheDocument();
-    expect(screen.getByText(/grounding evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Current$/)).toBeInTheDocument();
+    expect(screen.getByText(/bring these questions/i)).toBeInTheDocument();
+    expect(screen.getByText(/how this answer was checked/i)).toBeInTheDocument();
+    expect(screen.getByText(/from the report/i)).toBeInTheDocument();
+    expect(screen.getByText(/family history of premature cad/i)).toBeInTheDocument();
   });
 });

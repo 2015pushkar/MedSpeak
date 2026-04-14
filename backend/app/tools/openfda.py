@@ -82,29 +82,54 @@ class OpenFDATool:
         )
 
     async def _fetch_label_payload(self, medication_name: str) -> dict | None:
-        query = medication_name.strip()
-        if not query:
-            return None
+        for query in self._query_candidates(medication_name):
+            params = {
+                "search": f'openfda.brand_name:"{query}" OR openfda.generic_name:"{query}"',
+                "limit": 1,
+            }
 
-        params = {
-            "search": f'openfda.brand_name:"{query}" OR openfda.generic_name:"{query}"',
-            "limit": 1,
-        }
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.get(self.base_url, params=params)
+            except httpx.HTTPError:
+                continue
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(self.base_url, params=params)
-        except httpx.HTTPError:
-            return None
+            if response.status_code == 404:
+                continue
+            response.raise_for_status()
+            payload = response.json()
+            results = payload.get("results") or []
+            if results:
+                return results[0]
+        return None
 
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        payload = response.json()
-        results = payload.get("results") or []
-        if not results:
-            return None
-        return results[0]
+    def _query_candidates(self, medication_name: str) -> list[str]:
+        raw = re.sub(r"\s+", " ", medication_name).strip()
+        if not raw:
+            return []
+
+        candidates = [raw]
+        parenthetical = re.search(r"^(?P<outside>.+?)\s*\((?P<inside>[^)]+)\)$", raw)
+        if parenthetical:
+            outside = parenthetical.group("outside").strip()
+            inside = parenthetical.group("inside").strip()
+            if outside:
+                candidates.append(outside)
+            if inside:
+                candidates.append(inside)
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            cleaned = re.sub(r"\s+", " ", candidate).strip(" ,;")
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(cleaned)
+        return normalized
 
     def _first_sentence(self, values: list[str]) -> str | None:
         sentences = self._sentences(values, limit=1)

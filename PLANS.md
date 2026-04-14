@@ -17,7 +17,7 @@
 
 ### Retrieval / RAG
 - Offline ingestion script at [backend/scripts/ingest_openfda_labels.py](/c:/Users/Pushk/OneDrive/Documents/GitHub/MedSpeak/backend/scripts/ingest_openfda_labels.py).
-- Seed corpus of 10 medications ingested from OpenFDA and persisted under [backend/data/chroma/medication_labels.json](/c:/Users/Pushk/OneDrive/Documents/GitHub/MedSpeak/backend/data/chroma/medication_labels.json).
+- Seed corpus of 12 medications ingested from OpenFDA and persisted under [backend/data/chroma/medication_labels.json](/c:/Users/Pushk/OneDrive/Documents/GitHub/MedSpeak/backend/data/chroma/medication_labels.json).
 - Section-aware chunking at roughly `500` tokens with `50` overlap.
 - Retrieval service that prefers ChromaDB when available and falls back to a persistent JSON vector store on machines where `chromadb` cannot compile.
 - Deterministic embeddings for offline/dev mode; OpenAI embeddings are used automatically when an API key is configured.
@@ -54,7 +54,7 @@
 | UI grounding transparency | Implemented | Medication cards now show grounding source and snippets. |
 | Docker packaging | Implemented | Backend Dockerfile added. |
 | Clinician-reviewed medical wording | Human gate | Prompt/safety wording still needs domain review. |
-| Broader medication coverage | Next phase | Current corpus is intentionally limited to 10 medications. |
+| Broader medication coverage | Next phase | Current corpus is intentionally limited to 12 medications. |
 
 ## Phase Plan
 
@@ -76,7 +76,7 @@
 - Review a small set of golden documents manually and capture accepted examples for demo use.
 
 ## Retrieval Evaluation Story
-- Seed corpus: 10 medications from OpenFDA.
+- Seed corpus: 12 medications from OpenFDA.
 - Eval set: 10 labeled medication queries covering canonical names and common aliases.
 - Hit definition:
   - `top_1_hit_rate`: expected medication is the first retrieved medication.
@@ -92,7 +92,7 @@
   - That measurement was produced locally with the deterministic embedding fallback because OpenAI embeddings were not configured during the run.
 
 ## Human-in-the-Loop Checkpoints
-- Confirm the 10-medication seed list is the right interview/demo corpus.
+- Confirm the 12-medication seed list is the right interview/demo corpus.
 - Review disclaimer wording and the exact refusal tone for diagnosis, treatment, and dosing language.
 - Review the 10 retrieval eval cases and confirm the expected medication labels.
 - Review a small set of real outputs after ingestion and after safety enforcement to ensure the tone is useful and not alarmist.

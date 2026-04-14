@@ -70,6 +70,7 @@ class RateLimiter:
         rest_token: str | None = None,
     ) -> None:
         self.daily_limit = daily_limit
+        self._fallback_reason: str | None = None
         if rest_url and rest_token:
             self._store = UpstashRestStore(rest_url, rest_token)
             self.backend = "upstash"
@@ -79,14 +80,22 @@ class RateLimiter:
 
     async def peek(self, client_ip: str) -> RateLimitStatus:
         key, reset_at, _ = self._bucket(client_ip)
-        count = await self._store.get(key)
+        try:
+            count = await self._store.get(key)
+        except Exception as exc:
+            self._fallback_to_memory(exc)
+            count = await self._store.get(key)
         return self._status_from_count(count, reset_at)
 
     async def consume(self, client_ip: str) -> RateLimitStatus:
         key, reset_at, ttl_seconds = self._bucket(client_ip)
-        count = await self._store.increment(key)
-        if hasattr(self._store, "expire") and count == 1:
-            await self._store.expire(key, ttl_seconds)
+        try:
+            count = await self._store.increment(key)
+            if hasattr(self._store, "expire") and count == 1:
+                await self._store.expire(key, ttl_seconds)
+        except Exception as exc:
+            self._fallback_to_memory(exc)
+            count = await self._store.increment(key)
         return self._status_from_count(count, reset_at)
 
     async def healthcheck(self) -> dict[str, str]:
@@ -94,7 +103,10 @@ class RateLimiter:
             healthy = await self._store.ping()
         except Exception as exc:  # pragma: no cover
             return {"status": "degraded", "backend": self.backend, "error": str(exc)}
-        return {"status": "ok" if healthy else "degraded", "backend": self.backend}
+        health = {"status": "ok" if healthy else "degraded", "backend": self.backend}
+        if self._fallback_reason:
+            health["fallback_reason"] = self._fallback_reason
+        return health
 
     def _bucket(self, client_ip: str) -> tuple[str, datetime, int]:
         now = datetime.now(UTC)
@@ -113,3 +125,10 @@ class RateLimiter:
             reset_at=reset_at,
             limit_exceeded=count > self.daily_limit,
         )
+
+    def _fallback_to_memory(self, exc: Exception) -> None:
+        if self.backend == "memory":
+            return
+        self._store = InMemoryRateLimitStore()
+        self.backend = "memory"
+        self._fallback_reason = str(exc)

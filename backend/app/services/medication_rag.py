@@ -20,6 +20,56 @@ def normalize_medication_name(value: str) -> str:
     return re.sub(r"\s+", " ", cleaned)
 
 
+def medication_name_candidates(value: str) -> list[str]:
+    raw = re.sub(r"\s+", " ", value).strip()
+    if not raw:
+        return []
+
+    candidates = [raw]
+    parenthetical = re.search(r"^(?P<outside>.+?)\s*\((?P<inside>[^)]+)\)$", raw)
+    if parenthetical:
+        outside = parenthetical.group("outside").strip()
+        inside = parenthetical.group("inside").strip()
+        if outside:
+            candidates.append(outside)
+        if inside:
+            candidates.append(inside)
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        for variant in _candidate_variants(candidate):
+            if not variant or variant in seen:
+                continue
+            seen.add(variant)
+            normalized.append(variant)
+    return normalized
+
+
+def _candidate_variants(value: str) -> list[str]:
+    variants: list[str] = []
+    normalized = normalize_medication_name(value)
+    if normalized:
+        variants.append(normalized)
+
+    stripped = _strip_strength_and_form(value)
+    normalized_stripped = normalize_medication_name(stripped)
+    if normalized_stripped and normalized_stripped not in variants:
+        variants.append(normalized_stripped)
+    return variants
+
+
+def _strip_strength_and_form(value: str) -> str:
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|kg|ml|l|meq|iu|units?)\b", " ", value, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(?:tablet|tablets|tab|tabs|capsule|capsules|cap|caps|injection|solution|suspension|cream|ointment|patch|spray|drops?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip(" ,;")
+
+
 def shorten_text(value: str, limit: int = 220) -> str:
     normalized = re.sub(r"\s+", " ", value).strip()
     if len(normalized) <= limit:
@@ -341,9 +391,11 @@ def build_seed_alias_map(seed_medications: tuple[SeedMedication, ...] = SEED_MED
     mapping: dict[str, str] = {}
     for medication in seed_medications:
         canonical = medication.canonical_name
-        mapping[normalize_medication_name(canonical)] = canonical
+        for candidate in medication_name_candidates(canonical):
+            mapping[candidate] = canonical
         for alias in medication.aliases:
-            mapping[normalize_medication_name(alias)] = canonical
+            for candidate in medication_name_candidates(alias):
+                mapping[candidate] = canonical
     return mapping
 
 
@@ -365,11 +417,23 @@ class MedicationRAGService:
         return cls(store=store, embedder=embedder, alias_map=build_seed_alias_map())
 
     def resolve_name(self, query: str) -> str | None:
-        return self.alias_map.get(normalize_medication_name(query))
+        for candidate in medication_name_candidates(query):
+            resolved = self.alias_map.get(candidate)
+            if resolved:
+                return resolved
+        return None
+
+    def register_document_aliases(self, document: MedicationLabelDocument) -> None:
+        for candidate in medication_name_candidates(document.canonical_name):
+            self.alias_map[candidate] = document.canonical_name
+        for alias in document.aliases:
+            for candidate in medication_name_candidates(alias):
+                self.alias_map[candidate] = document.canonical_name
 
     async def ingest_documents(self, documents: list[MedicationLabelDocument]) -> int:
         chunks: list[MedicationChunk] = []
         for document in documents:
+            self.register_document_aliases(document)
             chunks.extend(build_label_chunks(document))
         if not chunks:
             return 0
@@ -379,23 +443,37 @@ class MedicationRAGService:
         self.store.upsert(chunks, embeddings)
         return len(chunks)
 
+    async def cache_openfda_document(self, medication_name: str, openfda_tool: OpenFDATool) -> bool:
+        try:
+            document = await openfda_tool.fetch_label_document(medication_name)
+        except Exception:
+            return False
+        if not document:
+            return False
+        ingested = await self.ingest_documents([document])
+        return ingested > 0
+
     async def retrieve(self, medication_name: str, *, top_k: int) -> MedicationRetrievalResult:
+        resolved_name = self.resolve_name(medication_name)
+        if resolved_name is None:
+            return MedicationRetrievalResult(
+                chunks=[],
+                resolved_name=None,
+                backend=self.store.backend,
+            )
+
         if self.store.count() == 0:
             return MedicationRetrievalResult(
                 chunks=[],
-                resolved_name=self.resolve_name(medication_name),
+                resolved_name=resolved_name,
                 backend=self.store.backend,
                 partial_reason="Medication retrieval corpus is empty. Run the ingestion script before relying on RAG grounding.",
             )
 
-        resolved_name = self.resolve_name(medication_name)
-        query_text = medication_name if not resolved_name else f"{medication_name} {resolved_name}"
+        query_text = f"{medication_name} {resolved_name}"
         try:
             embedding = (await self.embedder.embed_texts([query_text]))[0]
             chunks = self.store.query(embedding, canonical_name=resolved_name, top_k=top_k)
-            if not chunks and resolved_name is None:
-                expanded = self.store.query(embedding, canonical_name=None, top_k=top_k * 2)
-                chunks = [chunk for chunk in expanded if self._is_plausible_match(medication_name, chunk)][:top_k]
         except Exception:
             return MedicationRetrievalResult(
                 chunks=[],
@@ -417,20 +495,38 @@ class MedicationRAGService:
 
         for chunk in retrieval.chunks:
             sentence = split_sentences(chunk.text)[0] if split_sentences(chunk.text) else shorten_text(chunk.text)
-            evidence.append(
-                MedicationEvidence(
-                    source=retrieval.backend,
-                    label_section=chunk.label_section,
-                    chunk_id=chunk.chunk_id,
-                    snippet=shorten_text(sentence),
-                )
-            )
             if chunk.label_section == "indications_and_usage" and purpose == fallback_purpose:
                 purpose = shorten_text(sentence)
+                evidence.append(
+                    MedicationEvidence(
+                        source=retrieval.backend,
+                        label_section=chunk.label_section,
+                        chunk_id=chunk.chunk_id,
+                        snippet=shorten_text(sentence),
+                    )
+                )
             elif chunk.label_section == "adverse_reactions" and len(side_effects) < 2:
                 side_effects.append(shorten_text(sentence))
-            elif chunk.label_section in {"warnings_and_cautions", "warnings", "drug_interactions", "dosage_and_administration"} and len(cautions) < 2:
+                if len(evidence) < 2:
+                    evidence.append(
+                        MedicationEvidence(
+                            source=retrieval.backend,
+                            label_section=chunk.label_section,
+                            chunk_id=chunk.chunk_id,
+                            snippet=shorten_text(sentence),
+                        )
+                    )
+            elif chunk.label_section in {"warnings_and_cautions", "warnings", "drug_interactions"} and len(cautions) < 2:
                 cautions.append(shorten_text(sentence))
+                if len(evidence) < 2:
+                    evidence.append(
+                        MedicationEvidence(
+                            source=retrieval.backend,
+                            label_section=chunk.label_section,
+                            chunk_id=chunk.chunk_id,
+                            snippet=shorten_text(sentence),
+                        )
+                    )
 
         return MedicationGroundingPayload(
             purpose=purpose,
@@ -462,14 +558,6 @@ class MedicationRAGService:
         status = self.store.status()
         status["embedding_backend"] = self.embedder.backend
         return status
-
-    def _is_plausible_match(self, medication_name: str, chunk: RetrievedMedicationChunk) -> bool:
-        normalized_query = normalize_medication_name(medication_name)
-        candidates = {normalize_medication_name(chunk.canonical_name), *(normalize_medication_name(alias) for alias in chunk.aliases)}
-        if normalized_query in candidates:
-            return True
-        query_tokens = set(normalized_query.split())
-        return any(query_tokens and query_tokens.issubset(set(candidate.split())) for candidate in candidates)
 
     def _dedupe(self, values: list[str]) -> list[str]:
         seen: set[str] = set()

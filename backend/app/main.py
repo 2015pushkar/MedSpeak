@@ -9,6 +9,7 @@ from app.errors import AppError
 from app.pipeline import MedicalPipeline
 from app.schemas import ErrorResponse, HealthResponse, RateStatusResponse
 from app.services.rate_limiter import RateLimiter
+from app.services.runtime_judge import RuntimeJudgeService
 from app.tools.openfda import OpenFDATool
 from app.utils.extractor import extract_text_from_pdf_bytes, validate_raw_text
 
@@ -20,6 +21,7 @@ rate_limiter = RateLimiter(
 )
 openfda_tool = OpenFDATool()
 pipeline = MedicalPipeline(settings, openfda_tool)
+runtime_judge = RuntimeJudgeService(settings)
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -107,7 +109,10 @@ async def analyze(
                 status_code=413,
                 code="file_too_large",
                 message="The uploaded file exceeds the maximum supported size for this demo.",
-                details={"max_file_size_mb": settings.max_file_size_mb},
+                details={
+                    "max_file_size_kb": settings.max_file_size_kb,
+                    "max_file_size_bytes": settings.max_file_size_bytes,
+                },
             )
         extracted = extract_text_from_pdf_bytes(file_bytes, settings.request_char_limit)
         if extracted.truncated:
@@ -134,6 +139,7 @@ async def analyze(
         reset_at=limit_status.reset_at.isoformat(),
         partial_data_reasons=partial_data_reasons,
     )
+    result = await runtime_judge.review(report_text=extracted.text, analysis=result)
     return result.model_dump()
 
 

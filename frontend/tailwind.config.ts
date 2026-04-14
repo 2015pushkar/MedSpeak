@@ -10,15 +10,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#1d2a2f",
-        mist: "#f5f2ea",
-        sand: "#e8dcc6",
-        leaf: "#6a8f5b",
-        coral: "#d16d5b",
-        gold: "#c79b46",
+        ink:   "#0e1f3d",
+        mist:  "#eef3fb",
+        sand:  "#d6e4f5",
+        leaf:  "#2563eb",
+        coral: "#e05645",
+        gold:  "#d09716",
       },
       boxShadow: {
-        panel: "0 18px 40px rgba(29, 42, 47, 0.12)",
+        panel: "0 18px 40px rgba(14, 31, 61, 0.11)",
       },
     },
   },

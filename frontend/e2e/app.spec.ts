@@ -28,6 +28,8 @@ const analysisPayload = {
       cautions: ["Monitor blood pressure changes."],
       fda_enriched: true,
       grounding_status: "rag",
+      status: "current",
+      grounding_note: "grounded from local corpus",
       evidence: [
         {
           source: "chromadb",
@@ -44,6 +46,32 @@ const analysisPayload = {
       plain_language: "High blood pressure.",
     },
   ],
+  vitals: [
+    {
+      name: "Blood Pressure",
+      value: "168/98",
+      unit: "",
+    },
+  ],
+  allergies: [
+    {
+      substance: "Penicillin",
+      reaction: "Rash and hives.",
+    },
+  ],
+  surgeries: [
+    {
+      procedure: "Total abdominal hysterectomy and bilateral oophorectomy",
+      timing: "1998",
+      reason: "uterine fibroids",
+    },
+  ],
+  risk_factors: [
+    {
+      factor: "Family history of premature CAD",
+      plain_language: "Early heart disease in the family can matter when chest pain is evaluated.",
+    },
+  ],
   questions_for_doctor: ["What might explain my high glucose result?"],
   disclaimer: "Educational use only.",
   meta: {
@@ -54,6 +82,18 @@ const analysisPayload = {
     partial_data_reasons: [],
     fallback_used: true,
     sources: ["openfda"],
+    processing_trace: {
+      classifier: "llm",
+      medications: "llm",
+      diagnoses: "llm",
+      synthesis: "template",
+    },
+    judge: {
+      status: "passed",
+      model: "gpt-4o-mini",
+      issues: [],
+      blocked_sections: [],
+    },
   },
 };
 
@@ -72,10 +112,12 @@ test("analyzes pasted text", async ({ page }) => {
   await page.getByLabel("Paste report text").fill("Glucose: 142 mg/dL (70-100)");
   await page.getByRole("button", { name: "Explain This Report" }).click();
 
-  await expect(page.getByText("What this report is saying")).toBeVisible();
+  await expect(page.getByText("What this report means")).toBeVisible();
   await expect(page.getByText("Glucose", { exact: true })).toBeVisible();
   await expect(page.getByText("Lisinopril", { exact: true })).toBeVisible();
   await expect(page.getByText("RAG grounded")).toBeVisible();
+  await expect(page.getByText("Bring these questions")).toBeVisible();
+  await expect(page.getByText("How this answer was checked")).toBeVisible();
 });
 
 test("analyzes an uploaded pdf", async ({ page }) => {
@@ -92,6 +134,7 @@ test("analyzes an uploaded pdf", async ({ page }) => {
   });
   await page.getByRole("button", { name: "Explain This Report" }).click();
 
-  await expect(page.getByText("What this report is saying")).toBeVisible();
+  await expect(page.getByText("What this report means")).toBeVisible();
   await expect(page.getByText("Hypertension", { exact: true })).toBeVisible();
+  await expect(page.getByText("Penicillin", { exact: true })).toBeVisible();
 });

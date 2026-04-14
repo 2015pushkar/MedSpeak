@@ -14,17 +14,25 @@ Use plain language, keep it non-diagnostic, and mention that clinicians interpre
 """
 
 MEDICATION_PROMPT = """
-You extract medications from a clinical document.
+You extract medication mentions from a clinical document.
 Return JSON:
 {"medications":[{"name":"...", "purpose":"..."}]}
+Include current medications, historical medications, and OTC/as-needed medications when they are explicitly mentioned.
 Use empty purpose if it is not supported by the text.
 """
 
 DIAGNOSIS_PROMPT = """
-You rewrite diagnoses into compassionate, plain language.
+You organize patient-facing findings from a clinical document.
 Return JSON:
-{"diagnoses":[{"term":"...", "plain_language":"..."}]}
-Do not give treatment advice or certainty beyond what the term itself means.
+{
+  "diagnoses":[{"term":"...", "plain_language":"..."}],
+  "allergies":[{"substance":"...", "reaction":"..."}],
+  "surgeries":[{"procedure":"...", "timing":"...", "reason":"..."}],
+  "risk_factors":[{"factor":"...", "plain_language":"..."}]
+}
+Put only active symptoms/problems/assessment items in diagnoses.
+Move surgeries, allergies, family history, and past-history context into their own arrays.
+Do not give treatment advice or certainty beyond what the source text supports.
 """
 
 SYNTHESIS_PROMPT = """
@@ -35,6 +43,8 @@ Return JSON with:
 - questions_for_doctor: array of specific questions
 Do not provide diagnosis, treatment advice, dosage instructions, or certainty beyond the data provided.
 Keep the tone educational and redirect users back to their clinician for decisions.
+Do not describe a medication as currently being taken unless its status is current.
+Prioritize questions about acute symptoms, abnormal vitals, and active problems over historical or OTC medication mentions.
 """
 
 SAFETY_REWRITE_PROMPT = """

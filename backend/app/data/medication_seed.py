@@ -19,5 +19,7 @@ SEED_MEDICATIONS: tuple[SeedMedication, ...] = (
     SeedMedication("Losartan", ("Cozaar",)),
     SeedMedication("Albuterol", ("Ventolin", "ProAir", "Proventil")),
     SeedMedication("Hydrochlorothiazide", ("HCTZ", "Microzide")),
+    SeedMedication("Ibuprofen", ("Advil", "Motrin", "Ibuprofen 600 mg tablet")),
+    SeedMedication("Percocet", ("Oxycodone Acetaminophen", "Oxycodone/Acetaminophen", "Oxycodone and Acetaminophen")),
     SeedMedication("Sertraline", ("Zoloft",)),
 )

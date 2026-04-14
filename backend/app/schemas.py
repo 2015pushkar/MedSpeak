@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 DocumentType = Literal["lab", "medication", "diagnosis", "mixed", "unknown"]
 LabStatus = Literal["low", "normal", "high", "unknown"]
 GroundingStatus = Literal["rag", "openfda_live", "text_only"]
+MedicationStatus = Literal["current", "historical", "otc_prn", "unclear"]
+ProcessingSource = Literal["llm", "heuristic", "template"]
+JudgeStatus = Literal["skipped", "passed", "failed", "unavailable"]
 
 
 class ErrorResponse(BaseModel):
@@ -39,12 +42,50 @@ class MedicationResult(BaseModel):
     cautions: list[str] = Field(default_factory=list)
     fda_enriched: bool = False
     grounding_status: GroundingStatus = "text_only"
+    status: MedicationStatus = "unclear"
+    grounding_note: str = "mentioned only"
     evidence: list[MedicationEvidence] = Field(default_factory=list)
 
 
 class DiagnosisResult(BaseModel):
     term: str
     plain_language: str
+
+
+class VitalResult(BaseModel):
+    name: str
+    value: str
+    unit: str = ""
+
+
+class AllergyResult(BaseModel):
+    substance: str
+    reaction: str = ""
+
+
+class SurgeryResult(BaseModel):
+    procedure: str
+    timing: str = ""
+    reason: str = ""
+
+
+class RiskFactorResult(BaseModel):
+    factor: str
+    plain_language: str
+
+
+class ProcessingTrace(BaseModel):
+    classifier: ProcessingSource = "heuristic"
+    medications: ProcessingSource = "heuristic"
+    diagnoses: ProcessingSource = "heuristic"
+    synthesis: ProcessingSource = "template"
+
+
+class JudgeMeta(BaseModel):
+    status: JudgeStatus = "skipped"
+    model: str = ""
+    issues: list[str] = Field(default_factory=list)
+    blocked_sections: list[str] = Field(default_factory=list)
 
 
 class AnalysisMeta(BaseModel):
@@ -55,6 +96,8 @@ class AnalysisMeta(BaseModel):
     partial_data_reasons: list[str] = Field(default_factory=list)
     fallback_used: bool = False
     sources: list[str] = Field(default_factory=list)
+    processing_trace: ProcessingTrace = Field(default_factory=ProcessingTrace)
+    judge: JudgeMeta = Field(default_factory=JudgeMeta)
 
 
 class AnalysisResponse(BaseModel):
@@ -64,6 +107,10 @@ class AnalysisResponse(BaseModel):
     labs: list[LabResult] = Field(default_factory=list)
     medications: list[MedicationResult] = Field(default_factory=list)
     diagnoses: list[DiagnosisResult] = Field(default_factory=list)
+    vitals: list[VitalResult] = Field(default_factory=list)
+    allergies: list[AllergyResult] = Field(default_factory=list)
+    surgeries: list[SurgeryResult] = Field(default_factory=list)
+    risk_factors: list[RiskFactorResult] = Field(default_factory=list)
     questions_for_doctor: list[str] = Field(default_factory=list)
     disclaimer: str
     meta: AnalysisMeta

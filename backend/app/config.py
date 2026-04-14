@@ -17,12 +17,15 @@ class Settings(BaseSettings):
     app_env: str = "development"
     daily_limit: int = 5
     request_char_limit: int = 16_000
-    max_file_size_mb: int = 8
+    max_file_size_kb: int = 150
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_classifier_model: str = "gpt-4o-mini"
     openai_analyst_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
+    runtime_judge_enabled: bool = True
+    runtime_judge_model: str = "gpt-4o-mini"
+    runtime_judge_fail_closed: bool = True
     upstash_redis_rest_url: str | None = Field(default=None)
     upstash_redis_rest_token: str | None = Field(default=None)
     chroma_persist_directory: str = "data/chroma"
@@ -32,7 +35,7 @@ class Settings(BaseSettings):
 
     @property
     def max_file_size_bytes(self) -> int:
-        return self.max_file_size_mb * 1024 * 1024
+        return self.max_file_size_kb * 1024
 
     @property
     def openai_enabled(self) -> bool:
