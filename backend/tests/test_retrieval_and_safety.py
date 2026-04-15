@@ -93,6 +93,25 @@ async def test_rag_service_retrieves_seed_medication():
     assert grounding.evidence
 
 
+async def test_rag_service_skips_reembedding_unchanged_documents():
+    rag_service = build_rag_service()
+    document = MedicationLabelDocument(
+        canonical_name="Lisinopril",
+        aliases=("Prinivil", "Zestril"),
+        sections={
+            "indications_and_usage": "Lisinopril is indicated for the treatment of hypertension in adults and children.",
+            "adverse_reactions": "Common adverse reactions include dizziness and headache.",
+            "warnings_and_cautions": "Monitor blood pressure and kidney function during therapy.",
+        },
+    )
+
+    first = await rag_service.ingest_documents([document])
+    second = await rag_service.ingest_documents([document])
+
+    assert first > 0
+    assert second == 0
+
+
 async def test_rag_service_resolves_ibuprofen_and_percocet_aliases():
     rag_service = build_rag_service()
     await seed_ibuprofen_and_percocet(rag_service)
@@ -146,6 +165,7 @@ async def test_pipeline_does_not_ground_unknown_medications_to_seed_neighbors():
     assert all(item.grounding_status != "rag" for item in result.medications)
     assert all("lisinopril" not in item.purpose.lower() for item in result.medications)
     assert all(item.grounding_status in {"openfda_live", "text_only"} for item in result.medications)
+    await pipeline.medication_rag.wait_for_background_tasks()
 
 
 async def test_safety_service_replaces_unsafe_language_without_client():

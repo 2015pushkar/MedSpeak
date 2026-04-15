@@ -2,6 +2,10 @@
 
 MedSpeak is an AI-assisted medical document explainer built as a FastAPI + Next.js monorepo. It accepts PDF uploads or pasted report text, extracts structured findings, and returns plain-language explanations with clinician-oriented follow-up questions.
 
+![MedSpeak screenshot 1](images/r1.png)
+
+![MedSpeak screenshot 2](images/r2.png)
+
 ## Implemented Now
 
 ### Backend

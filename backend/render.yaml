@@ -1,13 +1,52 @@
 services:
   - type: web
     name: medspeak-api
-    env: python
+    runtime: docker
+    plan: starter
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    autoDeployTrigger: checksPass
+    healthCheckPath: /api/health
+    numInstances: 1
+    disk:
+      name: chroma-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: APP_ENV
         value: production
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
       - key: DAILY_LIMIT
         value: "5"
-
+      - key: REQUEST_CHAR_LIMIT
+        value: "16000"
+      - key: MAX_FILE_SIZE_KB
+        value: "150"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_CLASSIFIER_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_ANALYST_MODEL
+        value: gpt-4o
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: RUNTIME_JUDGE_ENABLED
+        value: "true"
+      - key: RUNTIME_JUDGE_MODEL
+        value: gpt-4o-mini
+      - key: RUNTIME_JUDGE_FAIL_CLOSED
+        value: "true"
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: CHROMA_PERSIST_DIRECTORY
+        value: /var/data/chroma
+      - key: RETRIEVAL_TOP_K
+        value: "3"
+      - key: LLM_MAX_RETRIES
+        value: "3"
+      - key: LLM_RETRY_BASE_DELAY_SECONDS
+        value: "0.5"

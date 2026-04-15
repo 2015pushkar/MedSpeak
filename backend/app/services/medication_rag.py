@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import math
 import re
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,13 @@ from app.config import Settings
 from app.data.medication_seed import SEED_MEDICATIONS, SeedMedication
 from app.schemas import MedicationEvidence
 from app.tools.openfda import MedicationLabelDocument, OpenFDATool
+
+PARENT_CHUNK_SIZE = 650
+PARENT_CHUNK_TARGET = 550
+CHILD_CHUNK_SIZE = 160
+CHILD_CHUNK_OVERLAP = 30
+CHUNKING_VERSION = "parent-child-v1"
+MANIFEST_VERSION = 1
 
 
 def normalize_medication_name(value: str) -> str:
@@ -115,24 +124,87 @@ def token_chunks(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list
     return chunks
 
 
+def _hash_payload(payload: Any) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _normalize_text_block(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def split_parent_chunks(
+    text: str,
+    *,
+    chunk_size: int = PARENT_CHUNK_SIZE,
+    target_size: int = PARENT_CHUNK_TARGET,
+) -> list[str]:
+    if not text.strip():
+        return []
+
+    raw_blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
+    blocks = raw_blocks or [text.strip()]
+    parents: list[str] = []
+
+    for block in blocks:
+        normalized = _normalize_text_block(block)
+        if not normalized:
+            continue
+        if len(re.findall(r"\S+", normalized)) <= chunk_size:
+            parents.append(normalized)
+            continue
+
+        sentences = split_sentences(normalized)
+        if len(sentences) <= 1:
+            parents.extend(token_chunks(normalized, chunk_size=chunk_size, overlap=0))
+            continue
+
+        current: list[str] = []
+        current_tokens = 0
+        for sentence in sentences:
+            sentence_tokens = len(re.findall(r"\S+", sentence))
+            if current and current_tokens + sentence_tokens > chunk_size:
+                parents.append(" ".join(current).strip())
+                current = [sentence]
+                current_tokens = sentence_tokens
+                continue
+
+            current.append(sentence)
+            current_tokens += sentence_tokens
+            if current_tokens >= target_size:
+                parents.append(" ".join(current).strip())
+                current = []
+                current_tokens = 0
+
+        if current:
+            parents.append(" ".join(current).strip())
+
+    return [parent for parent in parents if parent]
+
+
 @dataclass(frozen=True)
 class MedicationChunk:
     chunk_id: str
+    parent_id: str
     canonical_name: str
     aliases: tuple[str, ...]
     label_section: str
     text: str
+    parent_text: str
+    document_version: str | None = None
     source: str = "openfda"
 
 
 @dataclass(frozen=True)
 class RetrievedMedicationChunk:
     chunk_id: str
+    parent_id: str
     canonical_name: str
     aliases: tuple[str, ...]
     label_section: str
     text: str
+    parent_text: str
     score: float
+    document_version: str | None = None
     source: str = "chromadb"
 
 
@@ -158,6 +230,10 @@ class BaseEmbedder:
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError
+
+    @property
+    def signature(self) -> str:
+        return self.backend
 
 
 class DeterministicEmbedder(BaseEmbedder):
@@ -197,6 +273,10 @@ class OpenAIEmbedder(BaseEmbedder):
         response = await self.client.embeddings.create(model=self.model, input=texts)
         return [item.embedding for item in response.data]
 
+    @property
+    def signature(self) -> str:
+        return f"{self.backend}:{self.model}"
+
 
 class InMemoryMedicationVectorStore:
     backend = "memory"
@@ -208,12 +288,32 @@ class InMemoryMedicationVectorStore:
         for chunk, embedding in zip(chunks, embeddings):
             self._records[chunk.chunk_id] = {
                 "embedding": embedding,
+                "parent_id": chunk.parent_id,
                 "canonical_name": chunk.canonical_name,
                 "aliases": list(chunk.aliases),
                 "label_section": chunk.label_section,
                 "text": chunk.text,
+                "parent_text": chunk.parent_text,
+                "document_version": chunk.document_version,
                 "source": chunk.source,
             }
+
+    def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        removed = 0
+        if chunk_ids:
+            for chunk_id in chunk_ids:
+                if chunk_id in self._records:
+                    del self._records[chunk_id]
+                    removed += 1
+            return removed
+
+        if canonical_name is None:
+            return 0
+
+        doomed = [chunk_id for chunk_id, payload in self._records.items() if payload["canonical_name"] == canonical_name]
+        for chunk_id in doomed:
+            del self._records[chunk_id]
+        return len(doomed)
 
     def count(self) -> int:
         return len(self._records)
@@ -227,11 +327,14 @@ class InMemoryMedicationVectorStore:
             scored.append(
                 RetrievedMedicationChunk(
                     chunk_id=chunk_id,
+                    parent_id=payload.get("parent_id", chunk_id),
                     canonical_name=payload["canonical_name"],
                     aliases=tuple(payload["aliases"]),
                     label_section=payload["label_section"],
                     text=payload["text"],
+                    parent_text=payload.get("parent_text", payload["text"]),
                     score=score,
+                    document_version=payload.get("document_version"),
                     source=self.backend,
                 )
             )
@@ -268,6 +371,13 @@ class FileMedicationVectorStore(InMemoryMedicationVectorStore):
         self._ensure_loaded()
         super().upsert(chunks, embeddings)
         self._persist()
+
+    def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        self._ensure_loaded()
+        removed = super().delete(canonical_name=canonical_name, chunk_ids=chunk_ids)
+        if removed:
+            self._persist()
+        return removed
 
     def count(self) -> int:
         self._ensure_loaded()
@@ -318,14 +428,29 @@ class ChromaMedicationVectorStore:
             embeddings=embeddings,
             metadatas=[
                 {
+                    "parent_id": chunk.parent_id,
                     "canonical_name": chunk.canonical_name,
                     "aliases": "|".join(chunk.aliases),
                     "label_section": chunk.label_section,
+                    "parent_text": chunk.parent_text,
+                    "document_version": chunk.document_version or "",
                     "source": chunk.source,
                 }
                 for chunk in chunks
             ],
         )
+
+    def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        collection = self._get_collection()
+        if collection is None:
+            return 0
+        if chunk_ids:
+            collection.delete(ids=chunk_ids)
+            return len(chunk_ids)
+        if canonical_name is None:
+            return 0
+        collection.delete(where={"canonical_name": canonical_name})
+        return 0
 
     def count(self) -> int:
         collection = self._get_collection()
@@ -353,11 +478,14 @@ class ChromaMedicationVectorStore:
             results.append(
                 RetrievedMedicationChunk(
                     chunk_id=chunk_id,
+                    parent_id=str(metadata.get("parent_id", chunk_id)),
                     canonical_name=str(metadata.get("canonical_name", "")),
                     aliases=tuple(alias for alias in str(metadata.get("aliases", "")).split("|") if alias),
                     label_section=str(metadata.get("label_section", "unknown")),
                     text=str(document),
+                    parent_text=str(metadata.get("parent_text", document)),
                     score=similarity,
+                    document_version=str(metadata.get("document_version", "")) or None,
                     source=self.backend,
                 )
             )
@@ -369,21 +497,29 @@ class ChromaMedicationVectorStore:
         return {"status": "ok", "backend": self.backend, "count": self.count()}
 
 
-def build_label_chunks(document: MedicationLabelDocument, *, chunk_size: int = 500, overlap: int = 50) -> list[MedicationChunk]:
+def build_label_chunks(document: MedicationLabelDocument) -> list[MedicationChunk]:
     chunks: list[MedicationChunk] = []
+    slug = normalize_medication_name(document.canonical_name).replace(" ", "-")
     for label_section, text in document.sections.items():
         if not text.strip():
             continue
-        for index, chunk_text in enumerate(token_chunks(text, chunk_size=chunk_size, overlap=overlap)):
-            chunks.append(
-                MedicationChunk(
-                    chunk_id=f"{normalize_medication_name(document.canonical_name).replace(' ', '-')}-{label_section}-{index}",
-                    canonical_name=document.canonical_name,
-                    aliases=document.aliases,
-                    label_section=label_section,
-                    text=chunk_text,
+
+        for parent_index, parent_text in enumerate(split_parent_chunks(text)):
+            parent_id = f"{slug}-{label_section}-p{parent_index}"
+            child_chunks = token_chunks(parent_text, chunk_size=CHILD_CHUNK_SIZE, overlap=CHILD_CHUNK_OVERLAP) or [parent_text]
+            for child_index, child_text in enumerate(child_chunks):
+                chunks.append(
+                    MedicationChunk(
+                        chunk_id=f"{parent_id}-c{child_index}",
+                        parent_id=parent_id,
+                        canonical_name=document.canonical_name,
+                        aliases=document.aliases,
+                        label_section=label_section,
+                        text=child_text,
+                        parent_text=parent_text,
+                        document_version=document.set_id,
+                    )
                 )
-            )
     return chunks
 
 
@@ -400,10 +536,22 @@ def build_seed_alias_map(seed_medications: tuple[SeedMedication, ...] = SEED_MED
 
 
 class MedicationRAGService:
-    def __init__(self, *, store: Any, embedder: BaseEmbedder, alias_map: dict[str, str]) -> None:
+    def __init__(
+        self,
+        *,
+        store: Any,
+        embedder: BaseEmbedder,
+        alias_map: dict[str, str],
+        persist_directory: str | None = None,
+    ) -> None:
         self.store = store
         self.embedder = embedder
         self.alias_map = alias_map
+        self.persist_directory = Path(persist_directory) if persist_directory else None
+        self.manifest_path = self.persist_directory / "medication_corpus_manifest.json" if self.persist_directory else None
+        self._manifest: dict[str, Any] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._background_inflight: set[str] = set()
 
     @classmethod
     def from_settings(cls, settings: Settings, client: AsyncOpenAI | None) -> "MedicationRAGService":
@@ -414,7 +562,12 @@ class MedicationRAGService:
             embedder = DeterministicEmbedder()
         preferred_store = ChromaMedicationVectorStore(settings.chroma_persist_directory)
         store = preferred_store if preferred_store.status()["status"] == "ok" else FileMedicationVectorStore(settings.chroma_persist_directory)
-        return cls(store=store, embedder=embedder, alias_map=build_seed_alias_map())
+        return cls(
+            store=store,
+            embedder=embedder,
+            alias_map=build_seed_alias_map(),
+            persist_directory=settings.chroma_persist_directory,
+        )
 
     def resolve_name(self, query: str) -> str | None:
         for candidate in medication_name_candidates(query):
@@ -430,18 +583,52 @@ class MedicationRAGService:
             for candidate in medication_name_candidates(alias):
                 self.alias_map[candidate] = document.canonical_name
 
-    async def ingest_documents(self, documents: list[MedicationLabelDocument]) -> int:
-        chunks: list[MedicationChunk] = []
+    async def ingest_documents(self, documents: list[MedicationLabelDocument], *, source_mode: str = "manual") -> int:
+        manifest = self._load_manifest()
+        ingested_chunks = 0
+        changed = False
+
         for document in documents:
             self.register_document_aliases(document)
-            chunks.extend(build_label_chunks(document))
-        if not chunks:
-            return 0
-        embeddings = await self.embedder.embed_texts(
-            [f"{chunk.canonical_name} {' '.join(chunk.aliases)} {chunk.label_section} {chunk.text}" for chunk in chunks]
-        )
-        self.store.upsert(chunks, embeddings)
-        return len(chunks)
+            document_hash = self._document_hash(document)
+            entry = manifest["medications"].get(document.canonical_name)
+            if (
+                entry
+                and entry.get("document_hash") == document_hash
+                and entry.get("chunking_version") == CHUNKING_VERSION
+                and entry.get("embedder_signature") == self.embedder.signature
+            ):
+                if entry.get("source_mode") != source_mode:
+                    entry["source_mode"] = source_mode
+                    changed = True
+                continue
+
+            chunks = build_label_chunks(document)
+            self.store.delete(canonical_name=document.canonical_name)
+            if not chunks:
+                manifest["medications"].pop(document.canonical_name, None)
+                changed = True
+                continue
+
+            embeddings = await self.embedder.embed_texts(
+                [f"{chunk.canonical_name} {' '.join(chunk.aliases)} {chunk.label_section} {chunk.text}" for chunk in chunks]
+            )
+            self.store.upsert(chunks, embeddings)
+            manifest["medications"][document.canonical_name] = {
+                "aliases": list(document.aliases),
+                "set_id": document.set_id,
+                "document_hash": document_hash,
+                "chunk_ids": [chunk.chunk_id for chunk in chunks],
+                "chunking_version": CHUNKING_VERSION,
+                "embedder_signature": self.embedder.signature,
+                "source_mode": source_mode,
+            }
+            ingested_chunks += len(chunks)
+            changed = True
+
+        if changed:
+            self._save_manifest(manifest)
+        return ingested_chunks
 
     async def cache_openfda_document(self, medication_name: str, openfda_tool: OpenFDATool) -> bool:
         try:
@@ -450,8 +637,31 @@ class MedicationRAGService:
             return False
         if not document:
             return False
-        ingested = await self.ingest_documents([document])
+        ingested = await self.ingest_documents([document], source_mode="live")
         return ingested > 0
+
+    def schedule_openfda_cache(self, medication_name: str, openfda_tool: OpenFDATool) -> bool:
+        task_key = normalize_medication_name(medication_name)
+        if not task_key or task_key in self._background_inflight:
+            return False
+
+        self._background_inflight.add(task_key)
+
+        async def runner() -> None:
+            try:
+                await self.cache_openfda_document(medication_name, openfda_tool)
+            finally:
+                self._background_inflight.discard(task_key)
+
+        task = asyncio.create_task(runner())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return True
+
+    async def wait_for_background_tasks(self) -> None:
+        pending = list(self._background_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def retrieve(self, medication_name: str, *, top_k: int) -> MedicationRetrievalResult:
         resolved_name = self.resolve_name(medication_name)
@@ -473,7 +683,8 @@ class MedicationRAGService:
         query_text = f"{medication_name} {resolved_name}"
         try:
             embedding = (await self.embedder.embed_texts([query_text]))[0]
-            chunks = self.store.query(embedding, canonical_name=resolved_name, top_k=top_k)
+            child_hits = self.store.query(embedding, canonical_name=resolved_name, top_k=max(top_k * 3, top_k))
+            chunks = self._select_parent_contexts(child_hits, top_k=top_k)
         except Exception:
             return MedicationRetrievalResult(
                 chunks=[],
@@ -494,37 +705,41 @@ class MedicationRAGService:
         evidence: list[MedicationEvidence] = []
 
         for chunk in retrieval.chunks:
-            sentence = split_sentences(chunk.text)[0] if split_sentences(chunk.text) else shorten_text(chunk.text)
+            parent_sentences = split_sentences(chunk.parent_text)
+            parent_sentence = parent_sentences[0] if parent_sentences else shorten_text(chunk.parent_text)
+            child_sentences = split_sentences(chunk.text)
+            child_sentence = child_sentences[0] if child_sentences else shorten_text(chunk.text)
+
             if chunk.label_section == "indications_and_usage" and purpose == fallback_purpose:
-                purpose = shorten_text(sentence)
+                purpose = shorten_text(parent_sentence)
                 evidence.append(
                     MedicationEvidence(
                         source=retrieval.backend,
                         label_section=chunk.label_section,
                         chunk_id=chunk.chunk_id,
-                        snippet=shorten_text(sentence),
+                        snippet=shorten_text(child_sentence),
                     )
                 )
             elif chunk.label_section == "adverse_reactions" and len(side_effects) < 2:
-                side_effects.append(shorten_text(sentence))
+                side_effects.append(shorten_text(parent_sentence))
                 if len(evidence) < 2:
                     evidence.append(
                         MedicationEvidence(
                             source=retrieval.backend,
                             label_section=chunk.label_section,
                             chunk_id=chunk.chunk_id,
-                            snippet=shorten_text(sentence),
+                            snippet=shorten_text(child_sentence),
                         )
                     )
             elif chunk.label_section in {"warnings_and_cautions", "warnings", "drug_interactions"} and len(cautions) < 2:
-                cautions.append(shorten_text(sentence))
+                cautions.append(shorten_text(parent_sentence))
                 if len(evidence) < 2:
                     evidence.append(
                         MedicationEvidence(
                             source=retrieval.backend,
                             label_section=chunk.label_section,
                             chunk_id=chunk.chunk_id,
-                            snippet=shorten_text(sentence),
+                            snippet=shorten_text(child_sentence),
                         )
                     )
 
@@ -537,19 +752,45 @@ class MedicationRAGService:
         )
 
     async def ingest_seed_medications(self, openfda_tool: OpenFDATool) -> dict[str, Any]:
+        manifest = self._load_manifest()
+        if self._manifest_needs_rebuild(manifest):
+            self._clear_manifest_records(manifest)
+
+        current_seed_names = {medication.canonical_name for medication in SEED_MEDICATIONS}
+        previous_seed_names = set(manifest.get("seed_items", {}).keys())
+        removed = sorted(previous_seed_names - current_seed_names)
+        for canonical_name in removed:
+            self._remove_manifest_entry(manifest, canonical_name)
+
+        changed_seed_medications = [
+            medication
+            for medication in SEED_MEDICATIONS
+            if manifest.get("seed_items", {}).get(medication.canonical_name) != self._seed_medication_hash(medication)
+            or medication.canonical_name not in manifest["medications"]
+        ]
+
         documents: list[MedicationLabelDocument] = []
         misses: list[str] = []
-        for medication in SEED_MEDICATIONS:
+        for medication in changed_seed_medications:
             document = await openfda_tool.fetch_label_document(medication.canonical_name, aliases=medication.aliases)
             if not document:
                 misses.append(medication.canonical_name)
                 continue
             documents.append(document)
-        chunk_count = await self.ingest_documents(documents)
+
+        chunk_count = await self.ingest_documents(documents, source_mode="seed")
+        manifest = self._load_manifest()
+        manifest["seed_hash"] = self._seed_hash(SEED_MEDICATIONS)
+        manifest["seed_items"] = {
+            medication.canonical_name: self._seed_medication_hash(medication) for medication in SEED_MEDICATIONS
+        }
+        self._save_manifest(manifest)
         return {
             "documents": len(documents),
             "chunks": chunk_count,
             "misses": misses,
+            "removed": removed,
+            "skipped": len(SEED_MEDICATIONS) - len(changed_seed_medications),
             "backend": self.store.backend,
             "embedding_backend": self.embedder.backend,
         }
@@ -557,7 +798,28 @@ class MedicationRAGService:
     def healthcheck(self) -> dict[str, Any]:
         status = self.store.status()
         status["embedding_backend"] = self.embedder.backend
+        status["chunking_strategy"] = CHUNKING_VERSION
+        status["background_tasks"] = len(self._background_tasks)
+        if self.manifest_path:
+            status["manifest_path"] = str(self.manifest_path)
         return status
+
+    def _select_parent_contexts(
+        self,
+        child_hits: list[RetrievedMedicationChunk],
+        *,
+        top_k: int,
+    ) -> list[RetrievedMedicationChunk]:
+        seen_parent_ids: set[str] = set()
+        selected: list[RetrievedMedicationChunk] = []
+        for chunk in child_hits:
+            if chunk.parent_id in seen_parent_ids:
+                continue
+            seen_parent_ids.add(chunk.parent_id)
+            selected.append(chunk)
+            if len(selected) == top_k:
+                break
+        return selected
 
     def _dedupe(self, values: list[str]) -> list[str]:
         seen: set[str] = set()
@@ -569,3 +831,75 @@ class MedicationRAGService:
             seen.add(normalized)
             unique.append(value)
         return unique
+
+    def _default_manifest(self) -> dict[str, Any]:
+        return {
+            "version": MANIFEST_VERSION,
+            "chunking_version": CHUNKING_VERSION,
+            "embedder_signature": self.embedder.signature,
+            "seed_hash": "",
+            "seed_items": {},
+            "medications": {},
+        }
+
+    def _load_manifest(self) -> dict[str, Any]:
+        if self._manifest is not None:
+            return self._manifest
+        if self.manifest_path is None:
+            self._manifest = self._default_manifest()
+            return self._manifest
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.manifest_path.exists():
+            payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            self._manifest = {**self._default_manifest(), **payload}
+            return self._manifest
+        self._manifest = self._default_manifest()
+        return self._manifest
+
+    def _save_manifest(self, manifest: dict[str, Any]) -> None:
+        manifest["version"] = MANIFEST_VERSION
+        manifest["chunking_version"] = CHUNKING_VERSION
+        manifest["embedder_signature"] = self.embedder.signature
+        self._manifest = manifest
+        if self.manifest_path is None:
+            return
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    def _manifest_needs_rebuild(self, manifest: dict[str, Any]) -> bool:
+        return (
+            manifest.get("version") != MANIFEST_VERSION
+            or manifest.get("chunking_version") != CHUNKING_VERSION
+            or manifest.get("embedder_signature") != self.embedder.signature
+        )
+
+    def _clear_manifest_records(self, manifest: dict[str, Any]) -> None:
+        for canonical_name in list(manifest.get("medications", {}).keys()):
+            self.store.delete(canonical_name=canonical_name)
+        manifest.clear()
+        manifest.update(self._default_manifest())
+        self._save_manifest(manifest)
+
+    def _remove_manifest_entry(self, manifest: dict[str, Any], canonical_name: str) -> None:
+        self.store.delete(canonical_name=canonical_name)
+        manifest.get("medications", {}).pop(canonical_name, None)
+        manifest.get("seed_items", {}).pop(canonical_name, None)
+        self._save_manifest(manifest)
+
+    def _document_hash(self, document: MedicationLabelDocument) -> str:
+        return _hash_payload(
+            {
+                "canonical_name": document.canonical_name,
+                "aliases": list(document.aliases),
+                "set_id": document.set_id,
+                "sections": document.sections,
+            }
+        )
+
+    def _seed_hash(self, medications: tuple[SeedMedication, ...]) -> str:
+        return _hash_payload(
+            [{"canonical_name": medication.canonical_name, "aliases": list(medication.aliases)} for medication in medications]
+        )
+
+    def _seed_medication_hash(self, medication: SeedMedication) -> str:
+        return _hash_payload({"canonical_name": medication.canonical_name, "aliases": list(medication.aliases)})

@@ -1,9 +1,7 @@
 import type { AnalysisResponse, ApiErrorShape, RateStatus } from "@/lib/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(path, {
     ...init,
     cache: "no-store",
   });
@@ -29,4 +27,3 @@ export function analyzeDocument(formData: FormData): Promise<AnalysisResponse> {
     body: formData,
   });
 }
-

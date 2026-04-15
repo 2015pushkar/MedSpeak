@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     app_name: str = "MedSpeak API"
     app_env: str = "development"
+    cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     daily_limit: int = 5
     request_char_limit: int = 16_000
     max_file_size_kb: int = 150
@@ -36,6 +37,10 @@ class Settings(BaseSettings):
     @property
     def max_file_size_bytes(self) -> int:
         return self.max_file_size_kb * 1024
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     @property
     def openai_enabled(self) -> bool:

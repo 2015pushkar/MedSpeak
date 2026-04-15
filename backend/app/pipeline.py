@@ -305,7 +305,7 @@ class MedicalPipeline:
 
             evidence = self._build_live_openfda_evidence(enrichment)
             if enrichment.fda_enriched:
-                cached_for_future = await self.medication_rag.cache_openfda_document(medication.name, self.openfda_tool)
+                scheduled_for_future = self.medication_rag.schedule_openfda_cache(medication.name, self.openfda_tool)
                 grounded = medication.model_copy(
                     update={
                         "purpose": enrichment.purpose
@@ -315,8 +315,8 @@ class MedicalPipeline:
                         "cautions": enrichment.cautions,
                         "fda_enriched": True,
                         "grounding_status": "openfda_live",
-                        "grounding_note": "enriched from live OpenFDA and saved for future local grounding"
-                        if cached_for_future
+                        "grounding_note": "enriched from live OpenFDA and scheduled for future local grounding"
+                        if scheduled_for_future
                         else "enriched from live OpenFDA",
                         "evidence": evidence,
                     }

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "chunking_version": "parent-child-v1",
+  "embedder_signature": "openai:text-embedding-3-small",
+  "seed_hash": "",
+  "seed_items": {},
+  "medications": {
+    "Tylenol": {
+      "aliases": [
+        "ACETAMINOPHEN",
+        "TYLENOL Extra Strength"
+      ],
+      "set_id": "015a6179-bacb-452d-b594-4de628ddc11d",
+      "document_hash": "7c40c679f51c65ea06917fc8926fc728eecefe97180c96c9dd8eb196045d307c",
+      "chunk_ids": [
+        "tylenol-indications_and_usage-p0-c0",
+        "tylenol-dosage_and_administration-p0-c0",
+        "tylenol-warnings_and_cautions-p0-c0",
+        "tylenol-warnings_and_cautions-p0-c1"
+      ],
+      "chunking_version": "parent-child-v1",
+      "embedder_signature": "openai:text-embedding-3-small",
+      "source_mode": "live"
+    }
+  }
+}

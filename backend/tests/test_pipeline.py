@@ -84,6 +84,7 @@ async def test_pipeline_medication_only():
     assert result.medications
     assert all(item.fda_enriched for item in result.medications)
     assert all(item.grounding_status == "openfda_live" for item in result.medications)
+    await pipeline.medication_rag.wait_for_background_tasks()
 
 
 async def test_pipeline_promotes_live_openfda_medication_into_local_rag_for_next_request():
@@ -98,7 +99,8 @@ async def test_pipeline_promotes_live_openfda_medication_into_local_rag_for_next
     )
     assert first.medications
     assert first.medications[0].grounding_status == "openfda_live"
-    assert "saved for future local grounding" in first.medications[0].grounding_note.lower()
+    assert "scheduled for future local grounding" in first.medications[0].grounding_note.lower()
+    await pipeline.medication_rag.wait_for_background_tasks()
 
     second = await pipeline.analyze(
         text=text,
@@ -123,6 +125,7 @@ async def test_pipeline_mixed_content():
     assert result.medications
     assert result.diagnoses
     assert result.meta.processing_trace.classifier in {"heuristic", "llm"}
+    await pipeline.medication_rag.wait_for_background_tasks()
 
 
 async def test_pipeline_unknown_content():
@@ -191,3 +194,4 @@ async def test_pipeline_history_and_physical_sections():
     joined_questions = " ".join(result.questions_for_doctor).lower()
     assert "chest pain" in joined_questions
     assert "cimetidine" not in joined_questions
+    await pipeline.medication_rag.wait_for_background_tasks()
