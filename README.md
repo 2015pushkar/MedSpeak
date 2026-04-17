@@ -21,8 +21,6 @@ In business terms, the product idea is simple:
 - surface medication context in plain language,
 - and do it with visible evidence instead of black-box generation.
 
-This is an interview/demo build, not a compliance-ready medical product. The value of the project is the engineering approach: grounded retrieval, explicit fallbacks, safety constraints, and a clear product tradeoff between speed, cost, and trust.
-
 ## Why This Product Exists
 
 Healthcare documents create two problems at the same time:
@@ -57,40 +55,6 @@ That makes the system more trustworthy than a single prompt calling GPT on raw t
 The core design choice was:
 
 **Do not treat this as a single chat prompt. Treat it as a workflow.**
-
-That led to four architectural decisions:
-
-### 1. Multi-step orchestration instead of one-shot prompting
-
-The backend uses a LangGraph workflow with dedicated nodes for:
-
-- document classification,
-- lab analysis,
-- medication extraction and grounding,
-- diagnosis and context extraction,
-- final synthesis.
-
-This keeps the system easier to debug and lets each step fail gracefully instead of collapsing the whole experience.
-
-### 2. Ground medication answers instead of relying on model memory
-
-Medication explanations are the highest-risk part of the app, so MedSpeak does not rely only on the LLM's built-in knowledge.
-
-It uses a local medication corpus built from OpenFDA label data. At query time, the system retrieves relevant chunks and uses them to ground the explanation.
-
-### 3. Keep request-time latency low
-
-Chunking and embedding do not happen on the common request path for seeded medications.
-
-If a medication is missing from local RAG:
-
-- the system falls back to live OpenFDA,
-- returns the response,
-- then schedules background caching for future local retrieval.
-
-### 4. Add explicit safety controls
-
-Even grounded answers can still be phrased in a risky way. After synthesis, the app runs a deterministic safety review that flags diagnosis, treatment, and dosage-like wording and rewrites or replaces it.
 
 ## High-Level Architecture
 
