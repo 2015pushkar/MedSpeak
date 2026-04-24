@@ -60,29 +60,61 @@ The core design choice was:
 
 ```mermaid
 flowchart TD
-    A[User uploads PDF or raw text] --> B[FastAPI Backend]
-    B --> C[PDF text extraction / input validation]
-    C --> D[LangGraph Orchestrator]
+    U[User uploads PDF or pastes clinical text] --> FE[Next.js Frontend]
 
-    D --> E[Classifier]
-    E --> F[Lab Agent]
-    E --> G[Medication Agent]
-    E --> H[Diagnosis Agent]
+    FE --> API[FastAPI API Layer]
 
-    G --> I[Medication RAG Service]
-    I --> J[(ChromaDB / JSON Vector Store)]
-    G --> K[OpenFDA Live Fallback]
+    API --> V[Input Validation]
+    V --> EX[Text Extraction]
+    EX --> RL[Rate Limit Check]
+    RL --> LG[LangGraph Orchestrator]
 
-    F --> L[Lab explanation logic]
-    H --> M[Diagnosis and clinical context extraction]
+    LG --> CL[Document Classifier]
 
-    F --> N[Synthesis]
-    G --> N
-    H --> N
+    CL --> LAB[Lab Agent]
+    CL --> MED[Medication Agent]
+    CL --> DX[Diagnosis Agent]
 
-    N --> O[Safety Review]
-    O --> P[Next.js Frontend]
-    P --> Q[Plain-language UI with evidence badges]
+    LAB --> LABOUT[Structured lab findings and plain language explanation]
+
+    MED --> ALIAS[Medication Alias Resolution]
+    ALIAS --> RAG[Medication RAG Service]
+
+    RAG --> CHROMA[ChromaDB Vector Store]
+    CHROMA --> HIT{Local RAG Hit?}
+
+    HIT -->|Yes| PARENT[Promote child chunks to parent FDA label context]
+    HIT -->|No| FDA[Live OpenFDA Lookup]
+
+    FDA --> CACHE[Async Background Cache]
+    CACHE --> CHROMA
+
+    PARENT --> MEDOUT[Grounded medication evidence]
+    FDA --> MEDOUT
+
+    DX --> DXOUT[Diagnosis terms, vitals, allergies, risks]
+
+    LABOUT --> SYN[Synthesis Node]
+    MEDOUT --> SYN
+    DXOUT --> SYN
+
+    SYN --> DRAFT[Patient friendly summary, warnings, doctor questions]
+
+    DRAFT --> SAFE[Safety Rewrite and Policy Guardrails]
+    SAFE --> JUDGE[Runtime LLM Judge]
+
+    JUDGE --> PASS{Passes faithfulness, support, and safety?}
+
+    PASS -->|Yes| RESP[Full Safe Response]
+    PASS -->|No| REDUCED[Reduced Safe Response with partial data note]
+
+    RESP --> OBS[Logging, metrics, fallback tracking]
+    REDUCED --> OBS
+
+    OBS --> APIRESP[Structured JSON Response]
+    APIRESP --> FEOUT[Frontend Result Panel]
+
+    FEOUT --> FINAL[Plain language explanation with grounding source, evidence snippets, and review notes]
 ```
 
 ### High-Level Explanation
