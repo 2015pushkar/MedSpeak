@@ -1,3 +1,5 @@
+"""Core orchestration layer for classification, extraction, grounding, and synthesis."""
+
 from __future__ import annotations
 
 import asyncio
@@ -88,12 +90,16 @@ ACTIVE_PROBLEM_TERMS = (
 
 @dataclass(frozen=True)
 class CompletionResult:
+    """Structured result for JSON-mode LLM calls plus fallback context."""
+
     payload: dict[str, Any] | None
     failure_reason: str | None = None
 
 
 @dataclass(frozen=True)
 class MedicationExtractionBundle:
+    """Medication extraction output along with provenance and fallback notes."""
+
     medications: list[MedicationResult]
     source: str
     partial_reasons: list[str]
@@ -102,6 +108,8 @@ class MedicationExtractionBundle:
 
 @dataclass(frozen=True)
 class ClinicalContextBundle:
+    """Diagnosis and patient-context output grouped for one graph node."""
+
     diagnoses: list[DiagnosisResult]
     vitals: list[VitalResult]
     allergies: list[AllergyResult]
@@ -113,7 +121,10 @@ class ClinicalContextBundle:
 
 
 class MedicalPipeline:
+    """Run the end-to-end medical report workflow and assemble the final response."""
+
     def __init__(self, settings: Settings, openfda_tool: OpenFDATool) -> None:
+        """Build shared dependencies used across all analysis requests."""
         self.settings = settings
         self.openfda_tool = openfda_tool
         self.client = self._build_client()
@@ -123,6 +134,7 @@ class MedicalPipeline:
         self.graph = self._build_graph()
 
     def _build_client(self) -> AsyncOpenAI | None:
+        """Create the async OpenAI client when API access is configured."""
         if not self.settings.openai_enabled:
             return None
         return AsyncOpenAI(
@@ -131,6 +143,7 @@ class MedicalPipeline:
         )
 
     def _build_graph(self):
+        """Define the LangGraph nodes and routing for the analysis workflow."""
         graph = StateGraph(PipelineState)
         graph.add_node("classifier", self._classify_node)
         graph.add_node("lab_agent", self._lab_agent_node)
@@ -155,6 +168,7 @@ class MedicalPipeline:
         reset_at: str,
         partial_data_reasons: list[str] | None = None,
     ) -> AnalysisResponse:
+        """Execute the graph, then apply safety and response-level metadata."""
         self.last_debug = {}
         state: PipelineState = {
             "input_text": text,
@@ -221,10 +235,12 @@ class MedicalPipeline:
         )
 
     def _route_after_classifier(self, state: PipelineState) -> list[str]:
+        """Map classifier output to the next graph nodes to execute."""
         targets = state.get("agent_targets", [])
         return targets or ["synthesis"]
 
     async def _classify_node(self, state: PipelineState) -> PipelineState:
+        """Detect the document type and choose which specialist nodes to run."""
         llm_result = await self._classify_with_llm(state["input_text"])
         if llm_result.payload:
             return {
@@ -244,6 +260,7 @@ class MedicalPipeline:
         return payload
 
     async def _lab_agent_node(self, state: PipelineState) -> PipelineState:
+        """Extract lab values first, then optionally improve explanations with an LLM."""
         labs = self._extract_labs_heuristically(state["input_text"])
         partial_reasons: list[str] = []
         fallback_used = False
@@ -263,6 +280,7 @@ class MedicalPipeline:
         return payload
 
     async def _medication_agent_node(self, state: PipelineState) -> PipelineState:
+        """Extract medications and ground them with local RAG or live OpenFDA."""
         bundle = await self._extract_medications(state["input_text"])
         results: list[MedicationResult] = []
         partial_reasons = list(bundle.partial_reasons)
@@ -345,6 +363,7 @@ class MedicalPipeline:
         return payload
 
     async def _diagnosis_agent_node(self, state: PipelineState) -> PipelineState:
+        """Collect diagnoses plus contextual findings like vitals and allergies."""
         bundle = await self._extract_clinical_context(state["input_text"])
         payload: PipelineState = {
             "diagnoses": bundle.diagnoses,
@@ -361,6 +380,7 @@ class MedicalPipeline:
         return payload
 
     async def _synthesis_node(self, state: PipelineState) -> PipelineState:
+        """Turn structured findings into a patient-facing summary, warnings, and questions."""
         warnings = self._build_warning_messages(state)
         questions = self._build_questions(state)
         summary = self._build_summary(state)
@@ -393,6 +413,7 @@ class MedicalPipeline:
         }
 
     async def _classify_with_llm(self, text: str) -> CompletionResult:
+        """Ask the classifier model which document specialists should run."""
         completion = await self._json_completion(
             model=self.settings.openai_classifier_model,
             prompt=CLASSIFIER_PROMPT,
@@ -409,6 +430,7 @@ class MedicalPipeline:
         return CompletionResult(payload={"document_type": document_type, "agent_targets": valid_targets})
 
     async def _enhance_labs_with_llm(self, labs: list[LabResult]) -> tuple[list[LabResult] | None, str | None]:
+        """Rewrite lab explanations in plainer language without changing the values."""
         completion = await self._json_completion(
             model=self.settings.openai_analyst_model,
             prompt=LAB_ANALYST_PROMPT,
@@ -429,6 +451,7 @@ class MedicalPipeline:
         return enhanced, None
 
     async def _extract_medications(self, text: str) -> MedicationExtractionBundle:
+        """Extract medication mentions with an LLM first, then heuristic fallback."""
         if self.client:
             completion = await self._json_completion(
                 model=self.settings.openai_analyst_model,
@@ -468,6 +491,7 @@ class MedicalPipeline:
         )
 
     async def _extract_clinical_context(self, text: str) -> ClinicalContextBundle:
+        """Extract diagnoses and supporting patient context with LLM plus heuristics."""
         heuristic_bundle = self._extract_clinical_context_heuristically(text)
         if self.client:
             completion = await self._json_completion(
@@ -505,6 +529,7 @@ class MedicalPipeline:
         warnings: list[str],
         questions: list[str],
     ) -> CompletionResult:
+        """Ask the analyst model to polish the final patient-facing response."""
         completion = await self._json_completion(
             model=self.settings.openai_analyst_model,
             prompt=SYNTHESIS_PROMPT,
@@ -548,6 +573,7 @@ class MedicalPipeline:
         user_content: str,
         failure_label: str,
     ) -> CompletionResult:
+        """Run a JSON-only chat completion with retries and fallback messaging."""
         if not self.client:
             return CompletionResult(payload=None)
 
@@ -578,6 +604,7 @@ class MedicalPipeline:
         return CompletionResult(payload=None, failure_reason=last_error)
 
     def _build_live_openfda_evidence(self, enrichment: MedicationEnrichment) -> list[MedicationEvidence]:
+        """Convert live OpenFDA enrichment fields into compact evidence snippets."""
         evidence: list[MedicationEvidence] = []
         if enrichment.purpose:
             evidence.append(
@@ -609,6 +636,7 @@ class MedicalPipeline:
         return evidence[:2]
 
     def _heuristic_classification(self, text: str) -> tuple[DocumentType, list[str]]:
+        """Route the document using keyword and pattern-based signals."""
         lab_score = len(
             re.findall(r"\b(glucose|potassium|sodium|hemoglobin|a1c|creatinine|wbc|platelets|bun)\b", text, re.IGNORECASE)
         )
@@ -653,6 +681,7 @@ class MedicalPipeline:
         return "unknown", []
 
     def _extract_labs_heuristically(self, text: str) -> list[LabResult]:
+        """Parse common lab result lines and label them against reference ranges."""
         pattern = re.compile(
             r"(?P<name>[A-Za-z][A-Za-z0-9\s/%+\-]{1,40}?)\s*[:\-]?\s*(?P<value>-?\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z/%0-9^]+)?\s*(?:\((?P<range>[^)]+)\))?",
             re.IGNORECASE,
@@ -713,6 +742,7 @@ class MedicalPipeline:
         return results
 
     def _extract_medications_heuristically(self, text: str) -> list[MedicationResult]:
+        """Find medication names using dosage lines, sections, and simple narratives."""
         candidates: list[str] = []
         line_pattern = re.compile(
             r"(?P<name>[A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+\d+(?:\.\d+)?\s*(?:mg|mcg|g|units?|ml|mL)\b",
@@ -753,6 +783,7 @@ class MedicalPipeline:
         return self._dedupe_medications(medications)
 
     def _extract_clinical_context_heuristically(self, text: str) -> ClinicalContextBundle:
+        """Collect active problems, vitals, allergies, surgeries, and history cues."""
         active_diagnoses = [
             DiagnosisResult(term=term, plain_language=plain_language)
             for term, plain_language in self._extract_active_problem_matches(text).items()
@@ -769,6 +800,7 @@ class MedicalPipeline:
         )
 
     def _build_clinical_context_from_payload(self, payload: dict[str, Any]) -> ClinicalContextBundle:
+        """Convert raw LLM JSON into typed diagnosis and context models."""
         diagnoses = [
             DiagnosisResult(
                 term=item["term"].strip(),
@@ -816,6 +848,7 @@ class MedicalPipeline:
         )
 
     def _reclassify_context_bundle(self, text: str, bundle: ClinicalContextBundle) -> ClinicalContextBundle:
+        """Move mislabeled LLM findings into allergy, surgery, or history buckets."""
         diagnoses: list[DiagnosisResult] = []
         allergies = list(bundle.allergies)
         surgeries = list(bundle.surgeries)
@@ -857,6 +890,7 @@ class MedicalPipeline:
         partial_reasons: list[str],
         fallback_used: bool,
     ) -> ClinicalContextBundle:
+        """Combine LLM and heuristic context while removing duplicates."""
         return ClinicalContextBundle(
             diagnoses=self._dedupe_diagnoses([*primary.diagnoses, *supplement.diagnoses]),
             vitals=self._dedupe_vitals([*primary.vitals, *supplement.vitals]),
@@ -869,6 +903,7 @@ class MedicalPipeline:
         )
 
     def _extract_active_problem_matches(self, text: str) -> dict[str, str]:
+        """Match a small curated set of diagnosis and symptom phrases."""
         matches: dict[str, str] = {}
         lowered_text = text.lower()
         synonyms = {
@@ -883,6 +918,7 @@ class MedicalPipeline:
         return matches
 
     def _extract_vitals_heuristically(self, text: str) -> list[VitalResult]:
+        """Parse common vital-sign formats such as blood pressure and pulse."""
         vitals: list[VitalResult] = []
         patterns = {
             "Blood Pressure": (r"blood pressure\s*:?\s*(\d{2,3}/\d{2,3})", ""),
@@ -902,6 +938,7 @@ class MedicalPipeline:
         return vitals
 
     def _extract_allergies_heuristically(self, text: str) -> list[AllergyResult]:
+        """Extract allergy substance and reaction text from simple patterns."""
         allergies: list[AllergyResult] = []
         for match in re.finditer(
             r"allerg(?:y|ies)\s*:\s*(?P<substance>[^;\n.]+)(?:;\s*(?:experienced|reaction[: ]+)?(?P<reaction>[^.\n]+))?",
@@ -917,6 +954,7 @@ class MedicalPipeline:
         return allergies
 
     def _extract_surgeries_heuristically(self, text: str) -> list[SurgeryResult]:
+        """Extract prior procedures and nearby timing or reason details."""
         surgeries: list[SurgeryResult] = []
         year_context = ""
         for raw_line in text.splitlines():
@@ -948,6 +986,7 @@ class MedicalPipeline:
         return surgeries
 
     def _extract_risk_factors_heuristically(self, text: str) -> list[RiskFactorResult]:
+        """Detect a small set of high-value family-history and past-history cues."""
         factors: list[RiskFactorResult] = []
         lowered = text.lower()
         if "family history of premature cad" in lowered:
@@ -974,6 +1013,7 @@ class MedicalPipeline:
         return factors
 
     def _build_medication_result(self, *, text: str, name: str, purpose: str) -> MedicationResult:
+        """Create the base medication model before grounding enriches it."""
         status = self._infer_medication_status(text, name)
         return MedicationResult(
             name=name,
@@ -988,6 +1028,7 @@ class MedicalPipeline:
         )
 
     def _infer_medication_status(self, text: str, medication_name: str) -> MedicationStatus:
+        """Classify a medication mention as current, historical, OTC, or unclear."""
         contexts = self._medication_context_windows(text, medication_name)
         joined = " ".join(contexts).lower()
 
@@ -1030,6 +1071,7 @@ class MedicalPipeline:
         return "unclear"
 
     def _medication_context_windows(self, text: str, medication_name: str) -> list[str]:
+        """Grab local text windows around a medication mention for status inference."""
         lines = text.splitlines()
         candidates = self._medication_name_candidates(medication_name)
         contexts: list[str] = []
@@ -1043,6 +1085,7 @@ class MedicalPipeline:
         return contexts or [text[:400]]
 
     def _medication_name_candidates(self, medication_name: str) -> list[str]:
+        """Expand a medication name into simple alias candidates like generic and brand."""
         raw = medication_name.lower().strip()
         candidates = [raw]
         parenthetical = re.search(r"^(?P<outside>.+?)\s*\((?P<inside>[^)]+)\)$", raw)
@@ -1056,12 +1099,15 @@ class MedicalPipeline:
         return list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
     def _looks_like_allergy(self, normalized_term: str) -> bool:
+        """Check whether a diagnosis-like term is actually describing an allergy."""
         return "allergy" in normalized_term or "allergic" in normalized_term
 
     def _looks_like_surgery(self, normalized_term: str) -> bool:
+        """Check whether a diagnosis-like term is really a procedure mention."""
         return bool(re.search(r"\b(?:hysterectomy|oophorectomy|tah|bso|ectomy|surgery|operative)\b", normalized_term))
 
     def _looks_like_risk_or_history(self, normalized_term: str, text: str) -> bool:
+        """Check whether a term belongs in medical history rather than active problems."""
         if "family history" in normalized_term or normalized_term.startswith("fh of"):
             return True
         if normalized_term in {"peptic ulcer disease", "history of peptic ulcer disease"} and re.search(
@@ -1073,6 +1119,7 @@ class MedicalPipeline:
         return False
 
     def _normalize_synthesis_output(self, payload: dict[str, Any], state: PipelineState) -> dict[str, list[str] | str]:
+        """Clean and backfill synthesizer output before returning it to the caller."""
         summary = str(payload.get("summary", "")).strip() or self._build_summary(state)
         warnings = [str(item).strip() for item in payload.get("warnings", []) if str(item).strip()] or self._build_warning_messages(state)
         questions = [str(item).strip() for item in payload.get("questions_for_doctor", []) if str(item).strip()] or self._build_questions(state)
@@ -1083,6 +1130,7 @@ class MedicalPipeline:
         }
 
     def _build_summary(self, state: PipelineState) -> str:
+        """Create a deterministic summary when the LLM is skipped or fails."""
         labs = state.get("labs", [])
         medications = state.get("medications", [])
         diagnoses = state.get("diagnoses", [])
@@ -1130,6 +1178,7 @@ class MedicalPipeline:
         return " ".join(fragments) or "This document was processed and organized into plain-language findings."
 
     def _summarize_vitals(self, vitals: list[VitalResult]) -> str:
+        """Turn extracted vital signs into one short narrative sentence."""
         blood_pressure = next((item for item in vitals if item.name == "Blood Pressure"), None)
         if blood_pressure:
             match = re.match(r"(?P<systolic>\d{2,3})/(?P<diastolic>\d{2,3})", blood_pressure.value)
@@ -1141,6 +1190,7 @@ class MedicalPipeline:
         return ""
 
     def _build_warning_messages(self, state: PipelineState) -> list[str]:
+        """Assemble non-alarmist warnings from the structured findings."""
         warnings = list(state.get("warnings", []))
         labs = state.get("labs", [])
         medications = state.get("medications", [])
@@ -1160,6 +1210,7 @@ class MedicalPipeline:
         return self._dedupe(warnings)
 
     def _build_questions(self, state: PipelineState) -> list[str]:
+        """Generate follow-up questions that point the user back to a clinician."""
         questions: list[str] = []
         diagnoses = {self._canonicalize_problem_term(item.term): item for item in state.get("diagnoses", [])}
         vitals = state.get("vitals", [])
@@ -1186,6 +1237,7 @@ class MedicalPipeline:
         return self._dedupe(questions)
 
     def _prioritize_questions(self, state: PipelineState, questions: list[str]) -> list[str]:
+        """Filter low-value medication questions and keep the highest-value prompts."""
         blocked_medications = [
             medication.name.lower()
             for medication in state.get("medications", [])
@@ -1200,6 +1252,7 @@ class MedicalPipeline:
         return self._dedupe(prioritized)[:5]
 
     def _align_summary_with_state(self, summary: str, state: PipelineState) -> str:
+        """Reject summary wording that conflicts with the structured medication state."""
         medications = state.get("medications", [])
         current_meds = [med for med in medications if med.status == "current"]
         if medications and not current_meds and re.search(r"\b(?:taking|takes|is taking|taking medications?|medications? like)\b", summary, re.IGNORECASE):
@@ -1207,6 +1260,7 @@ class MedicalPipeline:
         return summary
 
     def _has_elevated_blood_pressure(self, vitals: list[VitalResult]) -> bool:
+        """Flag whether the extracted blood pressure crosses a simple threshold."""
         blood_pressure = next((item for item in vitals if item.name == "Blood Pressure"), None)
         if not blood_pressure:
             return False
@@ -1216,6 +1270,7 @@ class MedicalPipeline:
         return int(match.group("systolic")) >= 140 or int(match.group("diastolic")) >= 90
 
     def _dedupe(self, items: list[str]) -> list[str]:
+        """Remove duplicate strings while preserving the original order."""
         seen: set[str] = set()
         unique: list[str] = []
         for item in items:
@@ -1230,6 +1285,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_medications(self, medications: list[MedicationResult]) -> list[MedicationResult]:
+        """Remove duplicate medication names and obvious false positives."""
         seen: set[str] = set()
         unique: list[MedicationResult] = []
         for medication in medications:
@@ -1241,6 +1297,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_diagnoses(self, diagnoses: list[DiagnosisResult]) -> list[DiagnosisResult]:
+        """Merge diagnosis variants that refer to the same underlying problem."""
         seen: set[str] = set()
         unique: list[DiagnosisResult] = []
         for diagnosis in diagnoses:
@@ -1252,6 +1309,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_vitals(self, vitals: list[VitalResult]) -> list[VitalResult]:
+        """Keep the first extracted value for each vital-sign name."""
         seen: set[str] = set()
         unique: list[VitalResult] = []
         for vital in vitals:
@@ -1263,6 +1321,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_allergies(self, allergies: list[AllergyResult]) -> list[AllergyResult]:
+        """Remove duplicate allergy substances while preserving the first match."""
         seen: set[str] = set()
         unique: list[AllergyResult] = []
         for allergy in allergies:
@@ -1274,6 +1333,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_surgeries(self, surgeries: list[SurgeryResult]) -> list[SurgeryResult]:
+        """Collapse equivalent procedure names into one surgery entry."""
         seen: set[str] = set()
         unique: list[SurgeryResult] = []
         for surgery in surgeries:
@@ -1285,6 +1345,7 @@ class MedicalPipeline:
         return unique
 
     def _dedupe_risk_factors(self, risk_factors: list[RiskFactorResult]) -> list[RiskFactorResult]:
+        """Remove repeated risk-factor statements by normalized factor name."""
         seen: set[str] = set()
         unique: list[RiskFactorResult] = []
         for factor in risk_factors:
@@ -1296,6 +1357,7 @@ class MedicalPipeline:
         return unique
 
     def _canonicalize_problem_term(self, value: str) -> str:
+        """Map diagnosis variants onto a small set of canonical labels."""
         normalized = value.lower().strip()
         if "chest pain" in normalized:
             return "chest pain"
@@ -1310,6 +1372,7 @@ class MedicalPipeline:
         return normalized
 
     def _canonicalize_surgery_term(self, value: str) -> str:
+        """Normalize equivalent surgery names so deduplication is stable."""
         normalized = value.lower().strip()
         if re.search(r"\b(?:tah|hysterectomy)\b", normalized) and re.search(r"\b(?:bso|oophorectomy)\b", normalized):
             return "hysterectomy-oophorectomy"

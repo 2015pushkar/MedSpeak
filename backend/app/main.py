@@ -1,3 +1,5 @@
+"""FastAPI entrypoint for request handling, validation, and service wiring."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -28,6 +30,7 @@ runtime_judge = RuntimeJudgeService(settings)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    """Run shutdown cleanup for background ingestion tasks."""
     try:
         yield
     finally:
@@ -46,6 +49,7 @@ app.add_middleware(
 
 @app.exception_handler(AppError)
 async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
+    """Convert expected domain errors into a stable JSON API shape."""
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(code=exc.code, message=exc.message, details=exc.details).model_dump(),
@@ -54,6 +58,7 @@ async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
 
 @app.exception_handler(Exception)
 async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+    """Catch unexpected failures so clients still get structured JSON."""
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(
@@ -66,6 +71,7 @@ async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    """Report the status of the main backend dependencies."""
     redis_health = await rate_limiter.healthcheck()
     retrieval_health = pipeline.medication_rag.healthcheck()
     return HealthResponse(
@@ -88,6 +94,7 @@ async def health() -> HealthResponse:
 
 @app.get("/api/rate-status", response_model=RateStatusResponse)
 async def rate_status(request: Request) -> RateStatusResponse:
+    """Return the caller's remaining free analyses without consuming one."""
     status = await rate_limiter.peek(_client_ip(request))
     return RateStatusResponse(
         remaining=status.remaining,
@@ -102,6 +109,7 @@ async def analyze(
     file: UploadFile | None = File(default=None),
     raw_text: str | None = Form(default=None),
 ):
+    """Validate one input document, run the pipeline, then apply runtime review."""
     if file and raw_text:
         raise AppError(status_code=400, code="multiple_inputs", message="Submit either a PDF file or raw_text, not both.")
     if not file and raw_text is None:
@@ -155,6 +163,7 @@ async def analyze(
 
 
 def _client_ip(request: Request) -> str:
+    """Resolve the caller IP, preferring proxy headers when present."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()

@@ -1,3 +1,5 @@
+"""Medication retrieval, grounding, and corpus-ingestion utilities."""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,11 +27,13 @@ MANIFEST_VERSION = 1
 
 
 def normalize_medication_name(value: str) -> str:
+    """Lowercase and normalize a medication string for matching."""
     cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
     return re.sub(r"\s+", " ", cleaned)
 
 
 def medication_name_candidates(value: str) -> list[str]:
+    """Expand one medication mention into normalized lookup candidates."""
     raw = re.sub(r"\s+", " ", value).strip()
     if not raw:
         return []
@@ -56,6 +60,7 @@ def medication_name_candidates(value: str) -> list[str]:
 
 
 def _candidate_variants(value: str) -> list[str]:
+    """Generate normalized variants with and without dosage/form wording."""
     variants: list[str] = []
     normalized = normalize_medication_name(value)
     if normalized:
@@ -69,6 +74,7 @@ def _candidate_variants(value: str) -> list[str]:
 
 
 def _strip_strength_and_form(value: str) -> str:
+    """Remove dosage strengths and dosage forms from a medication string."""
     cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|kg|ml|l|meq|iu|units?)\b", " ", value, flags=re.IGNORECASE)
     cleaned = re.sub(
         r"\b(?:tablet|tablets|tab|tabs|capsule|capsules|cap|caps|injection|solution|suspension|cream|ointment|patch|spray|drops?)\b",
@@ -80,6 +86,7 @@ def _strip_strength_and_form(value: str) -> str:
 
 
 def shorten_text(value: str, limit: int = 220) -> str:
+    """Trim long text so evidence snippets stay readable in the API response."""
     normalized = re.sub(r"\s+", " ", value).strip()
     if len(normalized) <= limit:
         return normalized
@@ -87,6 +94,7 @@ def shorten_text(value: str, limit: int = 220) -> str:
 
 
 def split_sentences(value: str) -> list[str]:
+    """Split text into sentence-like chunks for chunking and summarization."""
     parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", value) if part.strip()]
     if parts:
         return parts
@@ -95,6 +103,7 @@ def split_sentences(value: str) -> list[str]:
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
+    """Score the angle similarity between two embedding vectors."""
     if not left or not right or len(left) != len(right):
         return 0.0
     numerator = sum(a * b for a, b in zip(left, right))
@@ -106,6 +115,7 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
 
 
 def token_chunks(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+    """Split text into overlapping token windows for vector retrieval."""
     tokens = re.findall(r"\S+", text)
     if not tokens:
         return []
@@ -125,10 +135,12 @@ def token_chunks(text: str, *, chunk_size: int = 500, overlap: int = 50) -> list
 
 
 def _hash_payload(payload: Any) -> str:
+    """Create a stable content hash for manifest and rebuild checks."""
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _normalize_text_block(value: str) -> str:
+    """Collapse whitespace before chunking or persistence."""
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -138,6 +150,7 @@ def split_parent_chunks(
     chunk_size: int = PARENT_CHUNK_SIZE,
     target_size: int = PARENT_CHUNK_TARGET,
 ) -> list[str]:
+    """Build larger parent chunks that preserve more section context."""
     if not text.strip():
         return []
 
@@ -183,6 +196,8 @@ def split_parent_chunks(
 
 @dataclass(frozen=True)
 class MedicationChunk:
+    """Stored child chunk plus the parent context it came from."""
+
     chunk_id: str
     parent_id: str
     canonical_name: str
@@ -196,6 +211,8 @@ class MedicationChunk:
 
 @dataclass(frozen=True)
 class RetrievedMedicationChunk:
+    """Retrieved chunk enriched with score and storage metadata."""
+
     chunk_id: str
     parent_id: str
     canonical_name: str
@@ -210,6 +227,8 @@ class RetrievedMedicationChunk:
 
 @dataclass(frozen=True)
 class MedicationGroundingPayload:
+    """Grounded medication summary assembled from retrieved evidence."""
+
     purpose: str
     common_side_effects: list[str]
     cautions: list[str]
@@ -219,6 +238,8 @@ class MedicationGroundingPayload:
 
 @dataclass(frozen=True)
 class MedicationRetrievalResult:
+    """Retrieval result plus fallback details for observability."""
+
     chunks: list[RetrievedMedicationChunk]
     resolved_name: str | None
     backend: str
@@ -226,23 +247,31 @@ class MedicationRetrievalResult:
 
 
 class BaseEmbedder:
+    """Minimal interface shared by all embedding backends."""
+
     backend = "custom"
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed one or more text inputs into vector space."""
         raise NotImplementedError
 
     @property
     def signature(self) -> str:
+        """Return a manifest-friendly identifier for the embedder."""
         return self.backend
 
 
 class DeterministicEmbedder(BaseEmbedder):
+    """Offline-safe embedder used when OpenAI embeddings are unavailable."""
+
     backend = "deterministic"
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed text with a deterministic hashing scheme for local development."""
         return [self._embed(text) for text in texts]
 
     def _embed(self, text: str, dimensions: int = 96) -> list[float]:
+        """Build a normalized bag-of-features vector from text tokens and n-grams."""
         vector = [0.0] * dimensions
         normalized = normalize_medication_name(text)
         if not normalized:
@@ -261,13 +290,17 @@ class DeterministicEmbedder(BaseEmbedder):
 
 
 class OpenAIEmbedder(BaseEmbedder):
+    """Production embedder backed by the OpenAI embeddings API."""
+
     backend = "openai"
 
     def __init__(self, client: AsyncOpenAI, model: str) -> None:
+        """Store the shared OpenAI client and embedding model name."""
         self.client = client
         self.model = model
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Delegate batch embedding generation to OpenAI."""
         if not texts:
             return []
         response = await self.client.embeddings.create(model=self.model, input=texts)
@@ -275,16 +308,21 @@ class OpenAIEmbedder(BaseEmbedder):
 
     @property
     def signature(self) -> str:
+        """Return a versioned identifier for manifest rebuild logic."""
         return f"{self.backend}:{self.model}"
 
 
 class InMemoryMedicationVectorStore:
+    """Simple in-memory vector store used for tests and local fallbacks."""
+
     backend = "memory"
 
     def __init__(self) -> None:
+        """Initialize the in-memory record dictionary."""
         self._records: dict[str, dict[str, Any]] = {}
 
     def upsert(self, chunks: list[MedicationChunk], embeddings: list[list[float]]) -> None:
+        """Insert or replace chunk records and their embeddings."""
         for chunk, embedding in zip(chunks, embeddings):
             self._records[chunk.chunk_id] = {
                 "embedding": embedding,
@@ -299,6 +337,7 @@ class InMemoryMedicationVectorStore:
             }
 
     def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        """Delete chunk records by medication name or explicit chunk ids."""
         removed = 0
         if chunk_ids:
             for chunk_id in chunk_ids:
@@ -316,9 +355,11 @@ class InMemoryMedicationVectorStore:
         return len(doomed)
 
     def count(self) -> int:
+        """Return how many chunk records are stored."""
         return len(self._records)
 
     def query(self, embedding: list[float], *, canonical_name: str | None, top_k: int) -> list[RetrievedMedicationChunk]:
+        """Score stored chunks against a query embedding and return the top hits."""
         scored: list[RetrievedMedicationChunk] = []
         for chunk_id, payload in self._records.items():
             if canonical_name and payload["canonical_name"] != canonical_name:
@@ -342,19 +383,24 @@ class InMemoryMedicationVectorStore:
         return scored[:top_k]
 
     def status(self) -> dict[str, Any]:
+        """Return a lightweight health summary for the current store."""
         return {"status": "ok", "backend": self.backend, "count": self.count()}
 
 
 class FileMedicationVectorStore(InMemoryMedicationVectorStore):
+    """JSON-backed vector store used when ChromaDB is unavailable."""
+
     backend = "json"
 
     def __init__(self, persist_directory: str, filename: str = "medication_labels.json") -> None:
+        """Point the store at its persistence directory and JSON file."""
         super().__init__()
         self.persist_directory = Path(persist_directory)
         self.file_path = self.persist_directory / filename
         self._loaded = False
 
     def _ensure_loaded(self) -> None:
+        """Lazy-load the JSON file so startup stays cheap."""
         if self._loaded:
             return
         self.persist_directory.mkdir(parents=True, exist_ok=True)
@@ -364,15 +410,18 @@ class FileMedicationVectorStore(InMemoryMedicationVectorStore):
         self._loaded = True
 
     def _persist(self) -> None:
+        """Write the current in-memory records back to disk."""
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         self.file_path.write_text(json.dumps({"records": self._records}, indent=2), encoding="utf-8")
 
     def upsert(self, chunks: list[MedicationChunk], embeddings: list[list[float]]) -> None:
+        """Update records in memory, then persist them to disk."""
         self._ensure_loaded()
         super().upsert(chunks, embeddings)
         self._persist()
 
     def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        """Delete records and persist only when something changed."""
         self._ensure_loaded()
         removed = super().delete(canonical_name=canonical_name, chunk_ids=chunk_ids)
         if removed:
@@ -380,28 +429,35 @@ class FileMedicationVectorStore(InMemoryMedicationVectorStore):
         return removed
 
     def count(self) -> int:
+        """Return the number of JSON-backed records."""
         self._ensure_loaded()
         return super().count()
 
     def query(self, embedding: list[float], *, canonical_name: str | None, top_k: int) -> list[RetrievedMedicationChunk]:
+        """Load records if needed, then delegate to the in-memory query logic."""
         self._ensure_loaded()
         return super().query(embedding, canonical_name=canonical_name, top_k=top_k)
 
     def status(self) -> dict[str, Any]:
+        """Return store health plus the JSON file path."""
         self._ensure_loaded()
         return {"status": "ok", "backend": self.backend, "count": self.count(), "path": str(self.file_path)}
 
 
 class ChromaMedicationVectorStore:
+    """Persistent ChromaDB-backed vector store for production retrieval."""
+
     backend = "chromadb"
 
     def __init__(self, persist_directory: str, collection_name: str = "medication_labels") -> None:
+        """Store ChromaDB configuration without opening the collection yet."""
         self.persist_directory = Path(persist_directory)
         self.collection_name = collection_name
         self._collection = None
         self._unavailable_reason: str | None = None
 
     def _get_collection(self):
+        """Create or reuse the Chroma collection on first access."""
         if self._collection is not None:
             return self._collection
         try:
@@ -419,6 +475,7 @@ class ChromaMedicationVectorStore:
         return self._collection
 
     def upsert(self, chunks: list[MedicationChunk], embeddings: list[list[float]]) -> None:
+        """Insert chunk vectors and metadata into ChromaDB."""
         collection = self._get_collection()
         if collection is None or not chunks:
             return
@@ -441,6 +498,7 @@ class ChromaMedicationVectorStore:
         )
 
     def delete(self, *, canonical_name: str | None = None, chunk_ids: list[str] | None = None) -> int:
+        """Delete Chroma records by ids or canonical medication name."""
         collection = self._get_collection()
         if collection is None:
             return 0
@@ -453,12 +511,14 @@ class ChromaMedicationVectorStore:
         return 0
 
     def count(self) -> int:
+        """Return the number of vectors stored in Chroma."""
         collection = self._get_collection()
         if collection is None:
             return 0
         return collection.count()
 
     def query(self, embedding: list[float], *, canonical_name: str | None, top_k: int) -> list[RetrievedMedicationChunk]:
+        """Query ChromaDB and convert raw payloads into typed retrieval records."""
         collection = self._get_collection()
         if collection is None or collection.count() == 0:
             return []
@@ -492,12 +552,14 @@ class ChromaMedicationVectorStore:
         return results
 
     def status(self) -> dict[str, Any]:
+        """Return Chroma availability plus the current collection count."""
         if self._get_collection() is None:
             return {"status": "degraded", "backend": self.backend, "error": self._unavailable_reason}
         return {"status": "ok", "backend": self.backend, "count": self.count()}
 
 
 def build_label_chunks(document: MedicationLabelDocument) -> list[MedicationChunk]:
+    """Convert one FDA label document into parent-child retrieval chunks."""
     chunks: list[MedicationChunk] = []
     slug = normalize_medication_name(document.canonical_name).replace(" ", "-")
     for label_section, text in document.sections.items():
@@ -524,6 +586,7 @@ def build_label_chunks(document: MedicationLabelDocument) -> list[MedicationChun
 
 
 def build_seed_alias_map(seed_medications: tuple[SeedMedication, ...] = SEED_MEDICATIONS) -> dict[str, str]:
+    """Build the starting alias map from the curated seed medication list."""
     mapping: dict[str, str] = {}
     for medication in seed_medications:
         canonical = medication.canonical_name
@@ -536,6 +599,8 @@ def build_seed_alias_map(seed_medications: tuple[SeedMedication, ...] = SEED_MED
 
 
 class MedicationRAGService:
+    """Own the medication corpus, retrieval flow, and background ingestion tasks."""
+
     def __init__(
         self,
         *,
@@ -544,6 +609,7 @@ class MedicationRAGService:
         alias_map: dict[str, str],
         persist_directory: str | None = None,
     ) -> None:
+        """Store the retrieval backend pieces and manifest bookkeeping paths."""
         self.store = store
         self.embedder = embedder
         self.alias_map = alias_map
@@ -555,6 +621,7 @@ class MedicationRAGService:
 
     @classmethod
     def from_settings(cls, settings: Settings, client: AsyncOpenAI | None) -> "MedicationRAGService":
+        """Build the service with the best available embedder and vector store."""
         embedder: BaseEmbedder
         if client and settings.openai_enabled:
             embedder = OpenAIEmbedder(client, settings.openai_embedding_model)
@@ -570,6 +637,7 @@ class MedicationRAGService:
         )
 
     def resolve_name(self, query: str) -> str | None:
+        """Resolve a raw medication mention to the canonical corpus name."""
         for candidate in medication_name_candidates(query):
             resolved = self.alias_map.get(candidate)
             if resolved:
@@ -577,6 +645,7 @@ class MedicationRAGService:
         return None
 
     def register_document_aliases(self, document: MedicationLabelDocument) -> None:
+        """Add canonical and alias spellings from one document into the alias map."""
         for candidate in medication_name_candidates(document.canonical_name):
             self.alias_map[candidate] = document.canonical_name
         for alias in document.aliases:
@@ -584,6 +653,7 @@ class MedicationRAGService:
                 self.alias_map[candidate] = document.canonical_name
 
     async def ingest_documents(self, documents: list[MedicationLabelDocument], *, source_mode: str = "manual") -> int:
+        """Chunk, embed, and persist medication label documents incrementally."""
         manifest = self._load_manifest()
         ingested_chunks = 0
         changed = False
@@ -631,6 +701,7 @@ class MedicationRAGService:
         return ingested_chunks
 
     async def cache_openfda_document(self, medication_name: str, openfda_tool: OpenFDATool) -> bool:
+        """Fetch one live OpenFDA label and add it to the local corpus."""
         try:
             document = await openfda_tool.fetch_label_document(medication_name)
         except Exception:
@@ -641,6 +712,7 @@ class MedicationRAGService:
         return ingested > 0
 
     def schedule_openfda_cache(self, medication_name: str, openfda_tool: OpenFDATool) -> bool:
+        """Kick off background OpenFDA ingestion without blocking the request path."""
         task_key = normalize_medication_name(medication_name)
         if not task_key or task_key in self._background_inflight:
             return False
@@ -659,11 +731,13 @@ class MedicationRAGService:
         return True
 
     async def wait_for_background_tasks(self) -> None:
+        """Wait for any scheduled corpus-warming tasks to finish."""
         pending = list(self._background_tasks)
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def retrieve(self, medication_name: str, *, top_k: int) -> MedicationRetrievalResult:
+        """Resolve a medication name and return the best local retrieval hits."""
         resolved_name = self.resolve_name(medication_name)
         if resolved_name is None:
             return MedicationRetrievalResult(
@@ -695,6 +769,7 @@ class MedicationRAGService:
         return MedicationRetrievalResult(chunks=chunks, resolved_name=resolved_name, backend=self.store.backend)
 
     async def ground_medication(self, medication_name: str, fallback_purpose: str, *, top_k: int) -> MedicationGroundingPayload | None:
+        """Turn retrieved label chunks into purpose, caution, and evidence fields."""
         retrieval = await self.retrieve(medication_name, top_k=top_k)
         if not retrieval.chunks:
             return None
@@ -752,6 +827,7 @@ class MedicationRAGService:
         )
 
     async def ingest_seed_medications(self, openfda_tool: OpenFDATool) -> dict[str, Any]:
+        """Populate or refresh the curated starter corpus from OpenFDA."""
         manifest = self._load_manifest()
         if self._manifest_needs_rebuild(manifest):
             self._clear_manifest_records(manifest)
@@ -796,6 +872,7 @@ class MedicationRAGService:
         }
 
     def healthcheck(self) -> dict[str, Any]:
+        """Expose retrieval backend status and corpus metadata for health endpoints."""
         status = self.store.status()
         status["embedding_backend"] = self.embedder.backend
         status["chunking_strategy"] = CHUNKING_VERSION
@@ -810,6 +887,7 @@ class MedicationRAGService:
         *,
         top_k: int,
     ) -> list[RetrievedMedicationChunk]:
+        """Promote top child hits into unique parent contexts for final grounding."""
         seen_parent_ids: set[str] = set()
         selected: list[RetrievedMedicationChunk] = []
         for chunk in child_hits:
@@ -822,6 +900,7 @@ class MedicationRAGService:
         return selected
 
     def _dedupe(self, values: list[str]) -> list[str]:
+        """Remove duplicate strings while preserving input order."""
         seen: set[str] = set()
         unique: list[str] = []
         for value in values:
@@ -833,6 +912,7 @@ class MedicationRAGService:
         return unique
 
     def _default_manifest(self) -> dict[str, Any]:
+        """Return the baseline manifest structure for corpus bookkeeping."""
         return {
             "version": MANIFEST_VERSION,
             "chunking_version": CHUNKING_VERSION,
@@ -843,6 +923,7 @@ class MedicationRAGService:
         }
 
     def _load_manifest(self) -> dict[str, Any]:
+        """Load the corpus manifest from disk once and cache it in memory."""
         if self._manifest is not None:
             return self._manifest
         if self.manifest_path is None:
@@ -857,6 +938,7 @@ class MedicationRAGService:
         return self._manifest
 
     def _save_manifest(self, manifest: dict[str, Any]) -> None:
+        """Persist the manifest after ingestion or rebuild changes."""
         manifest["version"] = MANIFEST_VERSION
         manifest["chunking_version"] = CHUNKING_VERSION
         manifest["embedder_signature"] = self.embedder.signature
@@ -867,6 +949,7 @@ class MedicationRAGService:
         self.manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     def _manifest_needs_rebuild(self, manifest: dict[str, Any]) -> bool:
+        """Check whether version, chunking, or embedder changes require a reset."""
         return (
             manifest.get("version") != MANIFEST_VERSION
             or manifest.get("chunking_version") != CHUNKING_VERSION
@@ -874,6 +957,7 @@ class MedicationRAGService:
         )
 
     def _clear_manifest_records(self, manifest: dict[str, Any]) -> None:
+        """Delete all stored medication records when a full rebuild is needed."""
         for canonical_name in list(manifest.get("medications", {}).keys()):
             self.store.delete(canonical_name=canonical_name)
         manifest.clear()
@@ -881,12 +965,14 @@ class MedicationRAGService:
         self._save_manifest(manifest)
 
     def _remove_manifest_entry(self, manifest: dict[str, Any], canonical_name: str) -> None:
+        """Remove one medication from the store and manifest tracking."""
         self.store.delete(canonical_name=canonical_name)
         manifest.get("medications", {}).pop(canonical_name, None)
         manifest.get("seed_items", {}).pop(canonical_name, None)
         self._save_manifest(manifest)
 
     def _document_hash(self, document: MedicationLabelDocument) -> str:
+        """Hash one medication document so unchanged content can be skipped."""
         return _hash_payload(
             {
                 "canonical_name": document.canonical_name,
@@ -897,9 +983,11 @@ class MedicationRAGService:
         )
 
     def _seed_hash(self, medications: tuple[SeedMedication, ...]) -> str:
+        """Hash the entire seed list to detect corpus-level changes."""
         return _hash_payload(
             [{"canonical_name": medication.canonical_name, "aliases": list(medication.aliases)} for medication in medications]
         )
 
     def _seed_medication_hash(self, medication: SeedMedication) -> str:
+        """Hash one seed medication entry for incremental refresh checks."""
         return _hash_payload({"canonical_name": medication.canonical_name, "aliases": list(medication.aliases)})
